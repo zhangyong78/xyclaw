@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "okx-ema-backtest"
+version = "0.1.0"
+description = "EMA5/EMA8 multi-period backtest scaffold for OKX spot trading."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26,<2.0",
+  "pandas>=2.1,<3.0",
+  "requests>=2.32,<3.0",
+  "websocket-client>=1.8,<2.0",
+]
+
+[project.scripts]
+okx-ema-backtest = "app.main:main"
+okx-ema-live = "app.live_main:main"
+
+[tool.setuptools]
+packages = ["app", "backtest", "core", "data", "live"]
