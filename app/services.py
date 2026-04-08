@@ -13,8 +13,11 @@ from backtest.scorer import score_period_results
 from backtest.sltp_matrix import run_sltp_matrix
 from core.types import BacktestConfig
 from data.fetch_history import download_history_bars, save_candles_csv
+from data.okx_rest import OKXPublicClient
 from data.resample import DEFAULT_PERIODS, load_1h_csv, resample_bars
 from live.config import LiveRunConfig, build_okx_credentials, load_okx_credentials
+from live.order_router import OrderRouter
+from live.precision import format_size
 from live.trader import LiveTrader
 
 PERIOD_CACHE_LIMITS = {"5m": 10_000, "15m": 10_000, "1H": 10_000, "4H": 10_000, "24H": 10_000}
@@ -68,6 +71,22 @@ class LiveRequest:
     execute: bool = False
     quote_balance: float | None = None
     base_balance: float | None = None
+    base_url: str | None = None
+    ws_private_url: str | None = None
+    api_key: str | None = None
+    api_secret: str | None = None
+    api_passphrase: str | None = None
+
+
+@dataclass(slots=True)
+class LiveManualOrderRequest:
+    symbol: str = "BTC-USDT-SWAP"
+    side: str = "buy"
+    price: float = 9_999.0
+    base_quantity: float = 0.001
+    leverage: int = 1
+    order_timeout: int = 25
+    simulate: bool = False
     base_url: str | None = None
     ws_private_url: str | None = None
     api_key: str | None = None
@@ -397,6 +416,99 @@ def run_live_check(request: LiveRequest) -> dict[str, Any]:
         "simulated": bool(request.simulate),
         "checked_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def submit_live_manual_limit_order(request: LiveManualOrderRequest) -> dict[str, Any]:
+    if str(request.side).strip().lower() not in {"buy", "sell"}:
+        raise RuntimeError("手动测试单只支持 buy 或 sell。")
+    if float(request.price) <= 0.0:
+        raise RuntimeError("测试单价格必须大于 0。")
+    if float(request.base_quantity) <= 0.0:
+        raise RuntimeError("测试单数量必须大于 0。")
+
+    if request.api_key and request.api_secret and request.api_passphrase:
+        credentials = build_okx_credentials(
+            api_key=request.api_key,
+            secret_key=request.api_secret,
+            passphrase=request.api_passphrase,
+            simulated=request.simulate,
+            base_url=request.base_url,
+            ws_private_url=request.ws_private_url,
+        )
+    else:
+        credentials = load_okx_credentials(
+            simulated=request.simulate,
+            base_url=request.base_url,
+            ws_private_url=request.ws_private_url,
+        )
+
+    public_client = OKXPublicClient(base_url=request.base_url or credentials.base_url)
+    instrument = public_client.get_instrument(request.symbol, inst_type="SWAP")
+    contract_info = _extract_swap_contract_info(instrument=instrument, reference_price=float(request.price))
+    desired_contracts = _base_qty_to_contracts(float(request.base_quantity), contract_info)
+    size = format_size(desired_contracts, contract_info["lot_size"], contract_info["min_size"])
+    if size is None:
+        raise RuntimeError("测试单数量低于交易所最小下单张数，无法提交。")
+
+    router = OrderRouter(credentials, execute=True, order_timeout_seconds=int(request.order_timeout or 25))
+    execution = router.place_swap_limit_order(
+        request.symbol,
+        side=str(request.side).strip().lower(),
+        size=size,
+        price=_format_order_price(request.price),
+        leverage=max(int(request.leverage or 1), 1),
+    )
+    return {
+        "request": _to_jsonable(asdict(request)),
+        "order": {
+            "symbol": request.symbol,
+            "side": str(request.side).strip().lower(),
+            "price": float(request.price),
+            "base_quantity": float(request.base_quantity),
+            "contracts": float(size),
+            "lot_size": str(contract_info["lot_size"]),
+            "min_size": str(contract_info["min_size"]),
+            "margin_ccy": str(contract_info["margin_ccy"]),
+        },
+        "execution": _to_jsonable(asdict(execution)),
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _extract_swap_contract_info(*, instrument: dict, reference_price: float) -> dict[str, float | str]:
+    base_ccy = str(instrument.get("baseCcy") or "")
+    quote_ccy = str(instrument.get("quoteCcy") or "")
+    margin_ccy = str(instrument.get("settleCcy") or quote_ccy or "USDT")
+    lot_size = str(instrument.get("lotSz") or "1")
+    min_size = str(instrument.get("minSz") or lot_size)
+    ct_val = float(instrument.get("ctVal") or 0.0)
+    ct_val_ccy = str(instrument.get("ctValCcy") or base_ccy)
+
+    if ct_val > 0.0 and ct_val_ccy.upper() == quote_ccy.upper() and reference_price > 0:
+        base_per_contract = ct_val / reference_price
+    else:
+        base_per_contract = ct_val if ct_val > 0.0 else 1.0
+
+    return {
+        "base_ccy": base_ccy,
+        "quote_ccy": quote_ccy,
+        "margin_ccy": margin_ccy,
+        "lot_size": lot_size,
+        "min_size": min_size,
+        "base_per_contract": float(base_per_contract),
+    }
+
+
+def _base_qty_to_contracts(base_qty: float, contract_info: dict[str, float | str]) -> float:
+    base_per_contract = float(contract_info.get("base_per_contract") or 0.0)
+    if base_qty <= 0.0 or base_per_contract <= 0.0:
+        return 0.0
+    return float(base_qty) / base_per_contract
+
+
+def _format_order_price(price: float) -> str:
+    text = f"{float(price):.8f}"
+    return text.rstrip("0").rstrip(".") or "0"
 
 
 def _looks_like_okx_unauthorized(exc: Exception) -> bool:

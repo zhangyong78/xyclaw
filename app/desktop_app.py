@@ -14,7 +14,15 @@ import pandas as pd
 
 from app.app_icon import apply_window_icon
 from app.chart_windows import BacktestChartBundle, BacktestChartWindow
-from app.services import BacktestRequest, LiveRequest, run_backtest, run_live_check, sync_local_period_cache
+from app.services import (
+    BacktestRequest,
+    LiveManualOrderRequest,
+    LiveRequest,
+    run_backtest,
+    run_live_check,
+    submit_live_manual_limit_order,
+    sync_local_period_cache,
+)
 
 
 APP_TITLE = "OKX \u91cf\u5316\u4ea4\u6613\u684c\u9762\u7a0b\u5e8f"
@@ -34,6 +42,10 @@ LEVERAGE_OPTIONS = [str(value) for value in range(1, 31)]
 HISTORY_BAR_LIMITS = {"5m": 10_000, "15m": 10_000, "1H": 10_000, "4H": 10_000}
 BACKTEST_CACHE_DIR = Path("desktop_reports") / "cache"
 AUTO_4H_CACHE_SYNC_MS = 60_000
+LIVE_TEST_ORDER_SYMBOL = "BTC-USDT-SWAP"
+LIVE_TEST_ORDER_DISPLAY = "BTCUSDT永续"
+LIVE_TEST_ORDER_PRICE = 9_999.0
+LIVE_TEST_ORDER_BASE_QTY = 0.001
 BACKTEST_TIME_TRANSLATOR = str.maketrans(
     {
         "０": "0",
@@ -107,6 +119,8 @@ class TradingDesktopApp(Tk):
         self.live_api_profile_combo: ttk.Combobox | None = None
         self.live_api_profile_combos: list[ttk.Combobox] = []
         self.live_api_profile_option_map: dict[str, str] = {}
+        self.live_test_order_button: ttk.Button | None = None
+        self._live_test_order_running = False
         self.page_switch_buttons: dict[str, ttk.Button] = {}
         self.page_canvas: Canvas | None = None
         self.page_frame: ttk.Frame | None = None
@@ -803,12 +817,23 @@ class TradingDesktopApp(Tk):
         self._schedule_bt_drawdown_preview()
 
     def _build_live_card(self, parent: ttk.Frame) -> None:
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(3, weight=1)
         parent.columnconfigure(0, weight=7)
         parent.columnconfigure(1, weight=5)
 
+        top_bar = ttk.Frame(parent, style="Card.TFrame")
+        top_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        top_bar.columnconfigure(0, weight=1)
+        ttk.Label(
+            top_bar,
+            text="测试开单会直接向 OKX 实盘提交 BTCUSDT永续限价买单：9999 USDT / 0.001 BTC。",
+            style="Muted.TLabel",
+        ).grid(row=0, column=0, sticky="w")
+        self.live_test_order_button = ttk.Button(top_bar, text="测试开单", command=self._start_live_test_order)
+        self.live_test_order_button.grid(row=0, column=1, sticky="e")
+
         setup_box = ttk.LabelFrame(parent, text="策略启动", style="Setup.TLabelframe", padding=(16, 14))
-        setup_box.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        setup_box.grid(row=1, column=0, sticky="nsew", padx=(0, 14))
         setup_box.columnconfigure(1, weight=1)
         setup_box.columnconfigure(3, weight=1)
 
@@ -866,7 +891,7 @@ class TradingDesktopApp(Tk):
         ).grid(row=10, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
         strategy_box = ttk.LabelFrame(parent, text="我的策略", style="Setup.TLabelframe", padding=(12, 12))
-        strategy_box.grid(row=0, column=1, sticky="nsew")
+        strategy_box.grid(row=1, column=1, sticky="nsew")
         strategy_box.columnconfigure(0, weight=1)
         strategy_box.rowconfigure(1, weight=1)
 
@@ -918,13 +943,13 @@ class TradingDesktopApp(Tk):
         self._refresh_live_strategy_table()
 
         button_bar = ttk.Frame(parent, style="Card.TFrame")
-        button_bar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        button_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         ttk.Button(button_bar, text="\u68c0\u67e5\u4e00\u6b21", style="Primary.TButton", command=self._start_live_once).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(button_bar, text="\u5f00\u59cb\u8f6e\u8be2", command=self._start_live_loop).grid(row=0, column=1, padx=(0, 8))
         ttk.Button(button_bar, text="\u505c\u6b62\u8f6e\u8be2", command=self._stop_live_loop).grid(row=0, column=2)
 
         advanced_box = ttk.LabelFrame(parent, text="\u8fde\u63a5\u4e0e\u4f59\u989d", style="Setup.TLabelframe", padding=(16, 12))
-        advanced_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
+        advanced_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         advanced_box.columnconfigure(1, weight=1)
         advanced_box.columnconfigure(3, weight=1)
 
@@ -971,7 +996,7 @@ class TradingDesktopApp(Tk):
         self._add_value(balance_grid, 0, 3, "总盈亏", self.live_total_pnl)
 
         status_row = ttk.Frame(parent, style="Card.TFrame")
-        status_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        status_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         status_row.columnconfigure(0, weight=5)
         status_row.columnconfigure(1, weight=4)
 
@@ -1018,7 +1043,7 @@ class TradingDesktopApp(Tk):
         live_log_box = ttk.LabelFrame(status_row, text="实盘运行日志", style="Setup.TLabelframe", padding=(12, 10))
         live_log_box.grid(row=0, column=1, sticky="nsew")
         self._build_live_log_card(live_log_box)
-        ttk.Label(parent, textvariable=self.live_status, style="Muted.TLabel").grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(parent, textvariable=self.live_status, style="Muted.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
     @staticmethod
     def _format_live_strategy_value(value: float | None) -> str:
@@ -3952,6 +3977,74 @@ class TradingDesktopApp(Tk):
         worker = threading.Thread(target=self._run_live_once_worker, args=(request,), daemon=True)
         worker.start()
 
+    def _start_live_test_order(self) -> None:
+        if self._live_test_order_running:
+            self.live_status.set("测试开单正在提交中，请稍候。")
+            return
+        if not self._ensure_live_credentials_ready():
+            return
+
+        request = self._build_live_test_order_request()
+        confirmed = messagebox.askyesno(
+            "确认测试开单",
+            "这会直接向 OKX 实盘提交一笔真实永续限价买单。\n"
+            f"标的：{LIVE_TEST_ORDER_DISPLAY}\n"
+            f"价格：{request.price:,.2f} USDT\n"
+            f"数量：{request.base_quantity:g} BTC\n"
+            f"杠杆：{request.leverage}x\n\n"
+            "继续后会真实挂单，是否确认？",
+        )
+        if not confirmed:
+            return
+
+        self._live_test_order_running = True
+        self._set_live_test_order_button_state("disabled")
+        self.live_status.set("正在提交测试开单，请稍候...")
+        self._live_log(self._build_live_test_order_log_text(request))
+        worker = threading.Thread(target=self._run_live_test_order_worker, args=(request,), daemon=True)
+        worker.start()
+
+    def _build_live_test_order_request(self) -> LiveManualOrderRequest:
+        return LiveManualOrderRequest(
+            symbol=LIVE_TEST_ORDER_SYMBOL,
+            side="buy",
+            price=LIVE_TEST_ORDER_PRICE,
+            base_quantity=LIVE_TEST_ORDER_BASE_QTY,
+            leverage=self._normalize_live_leverage(self.live_leverage.get()),
+            order_timeout=int(self.live_timeout.get() or "25"),
+            simulate=False,
+            api_key=self.live_api_key.get().strip() or None,
+            api_secret=self.live_api_secret.get().strip() or None,
+            api_passphrase=self.live_api_passphrase.get().strip() or None,
+        )
+
+    def _build_live_test_order_log_text(self, request: LiveManualOrderRequest) -> str:
+        return "\n".join(
+            [
+                "开始提交实盘测试开单",
+                f"账户={self._current_live_api_profile_label()} | 标的={LIVE_TEST_ORDER_DISPLAY}",
+                f"方向=买入 | 类型=限价委托 | 价格={float(request.price):,.2f} USDT",
+                f"数量={float(request.base_quantity):g} BTC | 杠杆={int(request.leverage)}x | 模式=真实挂单",
+            ]
+        )
+
+    def _run_live_test_order_worker(self, request: LiveManualOrderRequest) -> None:
+        try:
+            result = submit_live_manual_limit_order(request)
+            self.event_queue.put(("live_test_ok", result))
+        except Exception as exc:
+            self.event_queue.put(("error", f"测试开单失败：{exc}"))
+        finally:
+            self.event_queue.put(("live_test_done", None))
+
+    def _set_live_test_order_button_state(self, state: str) -> None:
+        if self.live_test_order_button is None or not self.live_test_order_button.winfo_exists():
+            return
+        try:
+            self.live_test_order_button.configure(state=state)
+        except Exception:
+            return
+
     def _run_live_once_worker(self, request: LiveRequest) -> None:
         attempt = 0
         while True:
@@ -4303,6 +4396,12 @@ class TradingDesktopApp(Tk):
                     self._handle_live_result(live_result, strategy_id=strategy_id)
             elif event == "live_trace":
                 self._live_log(str(payload))
+            elif event == "live_test_ok":
+                if isinstance(payload, dict):
+                    self._handle_live_test_order_result(payload)
+            elif event == "live_test_done":
+                self._live_test_order_running = False
+                self._set_live_test_order_button_state("normal")
             elif event == "live_loop_error":
                 if isinstance(payload, dict):
                     strategy_id = str(payload.get("strategy_id") or "").strip()
@@ -4345,6 +4444,9 @@ class TradingDesktopApp(Tk):
                     self.bt_status.set(message)
                     self._log(message)
                 elif message.startswith("实时检查失败："):
+                    self.live_status.set(message)
+                    self._live_log(message)
+                elif message.startswith("测试开单失败："):
                     self.live_status.set(message)
                     self._live_log(message)
                 else:
@@ -4502,6 +4604,15 @@ class TradingDesktopApp(Tk):
         execution = report.get("execution")
         if execution:
             self._live_log(f"\u8ba2\u5355\u72b6\u6001\uff1a{execution.get('status')}\uff0c\u8ba2\u5355\u53f7\uff1a{execution.get('cl_ord_id')}")
+            if isinstance(execution, dict):
+                execution_response = execution.get("response")
+                if isinstance(execution_response, dict):
+                    leverage_notice = str(execution_response.get("leverage_notice") or "").strip()
+                    if leverage_notice:
+                        self._live_log(leverage_notice)
+                    transport_notice = str(execution_response.get("transport_notice") or "").strip()
+                    if transport_notice:
+                        self._live_log(transport_notice)
             if execution.get("status") == "dry_run" and str(report.get("action") or "") in {"buy", "sell"}:
                 self._live_log(
                     f"{strategy_name} 已达到开单条件，但当前运行模式是“仅信号检查”，所以这次不会向 OKX 发单。"
@@ -4509,6 +4620,35 @@ class TradingDesktopApp(Tk):
                 )
         elif str(report.get("action") or "") in {"buy", "sell"}:
             self._live_log(f"{strategy_name} 已出现交易信号，但本次没有生成有效订单结果。原因：{translated_reason}")
+
+    def _handle_live_test_order_result(self, result: dict) -> None:
+        order = result.get("order", {}) if isinstance(result, dict) else {}
+        execution = result.get("execution", {}) if isinstance(result, dict) else {}
+        status = str(execution.get("status") or "-")
+        order_id = str(execution.get("cl_ord_id") or "-")
+        execution_response = execution.get("response") if isinstance(execution, dict) else {}
+        leverage_notice = ""
+        transport_notice = ""
+        if isinstance(execution_response, dict):
+            leverage_notice = str(execution_response.get("leverage_notice") or "").strip()
+            transport_notice = str(execution_response.get("transport_notice") or "").strip()
+        contracts = order.get("contracts")
+        contracts_text = self._format_live_strategy_value(float(contracts)) if contracts not in (None, "") else "-"
+        message = "\n".join(
+            [
+                "实盘测试开单已提交",
+                f"标的={LIVE_TEST_ORDER_DISPLAY} | 方向=买入 | 类型=限价委托",
+                f"价格={float(order.get('price', LIVE_TEST_ORDER_PRICE)):,.2f} USDT | 数量={float(order.get('base_quantity', LIVE_TEST_ORDER_BASE_QTY)):g} BTC",
+                f"合约张数={contracts_text} | 订单状态={status} | 订单号={order_id}",
+            ]
+        )
+        if leverage_notice:
+            message = f"{message}\n{leverage_notice}"
+        if transport_notice:
+            message = f"{message}\n{transport_notice}"
+        self.live_status.set(f"测试开单已提交：状态 {status}，订单号 {order_id}")
+        self._live_log(message)
+        messagebox.showinfo("测试开单已提交", message)
 
     def _translate_action(self, action: str) -> str:
         mapping = {
