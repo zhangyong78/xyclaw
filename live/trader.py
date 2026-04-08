@@ -228,17 +228,12 @@ class LiveTrader:
             trade_side=trade_side,
         )
         risk_cash = max(float(available_margin), 0.0) * max(float(self.config.leverage), 1.0)
-        effective_max_allocation_pct = self._resolve_auto_max_allocation_pct(
-            signal_frame=signal_frame,
-            latest_close=snapshot.close,
-            available_margin=available_margin,
-        )
         desired_base_qty = calculate_position_size(
             entry_price=snapshot.close,
             stop_price=stop_price,
             risk_amount=self.config.risk_amount,
             available_cash=risk_cash,
-            max_allocation_pct=effective_max_allocation_pct if effective_max_allocation_pct is not None else self.config.max_allocation_pct,
+            max_allocation_pct=self.config.max_allocation_pct,
             side=trade_side,
         )
         desired_contracts = self._base_qty_to_contracts(desired_base_qty, contract_info)
@@ -403,40 +398,6 @@ class LiveTrader:
             trades_df=trades_df.copy(),
             execution=execution,
         )
-
-    def _resolve_auto_max_allocation_pct(
-        self,
-        *,
-        signal_frame: pd.DataFrame,
-        latest_close: float,
-        available_margin: float,
-    ) -> float | None:
-        stop_mult = float(self.config.stop_loss_atr_multiplier or 0.0)
-        leverage = max(float(self.config.leverage or 0.0), 1.0)
-        risk_amount = float(self.config.risk_amount or 0.0)
-        if stop_mult <= 0.0 or risk_amount <= 0.0 or latest_close <= 0.0 or available_margin <= 0.0:
-            return None
-        if signal_frame.empty or "atr" not in signal_frame.columns:
-            return None
-
-        try:
-            atr_value = float(signal_frame["atr"].iloc[-1])
-        except Exception:
-            return None
-        if not pd.notna(atr_value) or atr_value <= 0.0:
-            return None
-
-        stop_distance = atr_value * stop_mult
-        if stop_distance <= 0.0:
-            return None
-
-        desired_base_qty = risk_amount / stop_distance
-        risk_cash = float(available_margin) * leverage
-        if desired_base_qty <= 0.0 or risk_cash <= 0.0:
-            return None
-
-        desired_notional = desired_base_qty * float(latest_close)
-        return max(desired_notional / risk_cash, 0.0)
 
     def run_loop(self) -> None:
         while True:

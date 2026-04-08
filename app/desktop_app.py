@@ -516,7 +516,7 @@ class TradingDesktopApp(Tk):
         self._add_setup_entry(setup_box, 5, 0, "止损 ATR 倍数", self.live_stop_atr)
         self._add_setup_entry(setup_box, 5, 2, "止盈 ATR 倍数", self.live_take_atr)
         self._add_setup_entry(setup_box, 6, 0, "风险金", self.live_risk)
-        self._add_setup_entry(setup_box, 6, 2, "固定数量", self.live_fixed_size)
+        self._add_setup_entry(setup_box, 6, 2, "固定数量", self.live_fixed_size, state="readonly")
         self._add_setup_combo(setup_box, 7, 0, "下单标的", self.live_order_symbol, ORDER_SYMBOL_OPTIONS)
         self._add_setup_combo(setup_box, 7, 2, "永续杠杆倍数", self.live_leverage, LEVERAGE_OPTIONS, state="readonly")
 
@@ -562,10 +562,10 @@ class TradingDesktopApp(Tk):
         self._add_setup_entry(advanced_box, 1, 2, "API Secret", self.live_api_secret, show="*", width=22)
         self._add_setup_entry(advanced_box, 2, 0, "Passphrase", self.live_api_passphrase, show="*", width=22)
         self._add_setup_entry(advanced_box, 2, 2, "扫描K线数", self.live_bars)
-        self._add_setup_entry(advanced_box, 3, 0, "最大资金占比", self.live_max_alloc, state="readonly")
+        self._add_setup_entry(advanced_box, 3, 0, "最大资金占比", self.live_max_alloc)
         ttk.Label(
             advanced_box,
-            text="系统会按 风险金 / (ATR × 止损ATR倍数) 自动换算仓位，并自动回填这里。",
+            text="最大资金占比请手动填写。",
             style="SetupNote.TLabel",
             wraplength=420,
             justify="left",
@@ -609,17 +609,16 @@ class TradingDesktopApp(Tk):
 
         metric_strip = ttk.Frame(status_grid, style="Card.TFrame")
         metric_strip.grid(row=1, column=0, sticky="ew", padx=6, pady=(8, 6))
-        metric_weights = (2, 2, 1, 1, 1, 1, 1)
-        for col, weight in enumerate(metric_weights):
+        for col, weight in enumerate((2, 2, 1, 1)):
             metric_strip.columnconfigure(col, weight=weight)
 
         self._add_value(metric_strip, 0, 0, "账户余额", self.live_account_balance)
         self._add_value(metric_strip, 0, 1, "触发原因", self.live_reason)
         self._add_value(metric_strip, 0, 2, "最新收盘", self.live_price)
         self._add_value(metric_strip, 0, 3, "建议数量", self.live_size)
-        self._add_value(metric_strip, 0, 4, "今日盈亏", self.live_today_pnl)
-        self._add_value(metric_strip, 0, 5, "总盈亏", self.live_total_pnl)
-        self._add_value(metric_strip, 0, 6, "胜率", self.live_win_rate)
+        self._add_value(metric_strip, 1, 0, "今日盈亏", self.live_today_pnl)
+        self._add_value(metric_strip, 1, 1, "总盈亏", self.live_total_pnl)
+        self._add_value(metric_strip, 1, 2, "胜率", self.live_win_rate)
         ttk.Label(parent, textvariable=self.live_status, style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(12, 0))
 
     def _build_live_kline_preview_card2(self, parent: ttk.Frame) -> None:
@@ -840,7 +839,7 @@ class TradingDesktopApp(Tk):
         self._add_setup_entry(setup_box, 5, 2, "止盈 ATR 倍数", self.live_take_atr)
 
         self._add_setup_entry(setup_box, 6, 0, "\u98ce\u9669\u91d1", self.live_risk)
-        self._add_setup_entry(setup_box, 6, 2, "固定数量", self.live_fixed_size)
+        self._add_setup_entry(setup_box, 6, 2, "固定数量", self.live_fixed_size, state="readonly")
         self._add_setup_combo(setup_box, 7, 0, "下单标的", self.live_order_symbol, ORDER_SYMBOL_OPTIONS)
         self._add_setup_combo(setup_box, 7, 2, "永续杠杆倍数", self.live_leverage, LEVERAGE_OPTIONS, state="readonly")
 
@@ -953,10 +952,10 @@ class TradingDesktopApp(Tk):
         self._add_setup_entry(advanced_box, 1, 2, "API Secret", self.live_api_secret, show="*", width=22)
         self._add_setup_entry(advanced_box, 2, 0, "Passphrase", self.live_api_passphrase, show="*", width=22)
         self._add_setup_entry(advanced_box, 2, 2, "扫描K线数", self.live_bars)
-        self._add_setup_entry(advanced_box, 3, 0, "\u6700\u5927\u8d44\u91d1\u5360\u6bd4", self.live_max_alloc, state="readonly")
+        self._add_setup_entry(advanced_box, 3, 0, "\u6700\u5927\u8d44\u91d1\u5360\u6bd4", self.live_max_alloc)
         ttk.Label(
             advanced_box,
-            text="系统会按 风险金 / (ATR × 止损ATR倍数) 自动换算仓位，并自动回填这里。",
+            text="最大资金占比请手动填写。",
             style="SetupNote.TLabel",
             wraplength=420,
             justify="left",
@@ -1005,17 +1004,16 @@ class TradingDesktopApp(Tk):
 
         metric_strip = ttk.Frame(status_grid, style="Card.TFrame")
         metric_strip.grid(row=1, column=0, sticky="ew", padx=6, pady=(8, 6))
-        metric_weights = (2, 2, 1, 1, 1, 1, 1)
-        for col, weight in enumerate(metric_weights):
+        for col, weight in enumerate((2, 2, 1, 1)):
             metric_strip.columnconfigure(col, weight=weight)
 
         self._add_value(metric_strip, 0, 0, "账户余额", self.live_account_balance)
         self._add_value(metric_strip, 0, 1, "触发原因", self.live_reason)
         self._add_value(metric_strip, 0, 2, "\u6700\u65b0\u6536\u76d8", self.live_price)
         self._add_value(metric_strip, 0, 3, "建议数量", self.live_size)
-        self._add_value(metric_strip, 0, 4, "今日盈亏", self.live_today_pnl)
-        self._add_value(metric_strip, 0, 5, "总盈亏", self.live_total_pnl)
-        self._add_value(metric_strip, 0, 6, "胜率", self.live_win_rate)
+        self._add_value(metric_strip, 1, 0, "今日盈亏", self.live_today_pnl)
+        self._add_value(metric_strip, 1, 1, "总盈亏", self.live_total_pnl)
+        self._add_value(metric_strip, 1, 2, "胜率", self.live_win_rate)
 
         live_log_box = ttk.LabelFrame(status_row, text="实盘运行日志", style="Setup.TLabelframe", padding=(12, 10))
         live_log_box.grid(row=0, column=1, sticky="nsew")
@@ -1036,13 +1034,6 @@ class TradingDesktopApp(Tk):
             return f"{float(value):+,.2f}"
         except (TypeError, ValueError):
             return str(value).strip() or "-"
-
-    @staticmethod
-    def _format_live_auto_max_allocation(value: float | None) -> str:
-        if value is None:
-            return "2"
-        formatted = f"{float(value):.4f}".rstrip("0").rstrip(".")
-        return formatted or "0"
 
     @staticmethod
     def _format_live_fixed_size(value: float | None) -> str:
@@ -1376,7 +1367,6 @@ class TradingDesktopApp(Tk):
         if not snapshot:
             self.live_chart_bundle = None
             self._reset_live_account_snapshot()
-            self.live_max_alloc.set("2")
             self.live_fixed_size.set("1")
             self.live_account_panel_name.set(row.get("account", strategy_name) if row else strategy_name)
             self._refresh_live_action_account()
@@ -1402,11 +1392,6 @@ class TradingDesktopApp(Tk):
         fast_value = snapshot.get("fast_ema")
         slow_value = snapshot.get("slow_ema")
         signal_frame = bundle.signal_frame if isinstance(bundle, BacktestChartBundle) else None
-        auto_max_alloc = self._resolve_live_auto_max_allocation_pct(
-            report=report,
-            request_payload=request_payload,
-            signal_frame=signal_frame,
-        )
         auto_fixed_size = self._resolve_live_auto_fixed_size(
             request_payload=request_payload,
             signal_frame=signal_frame,
@@ -1417,7 +1402,6 @@ class TradingDesktopApp(Tk):
         latest_close = report.get("latest_close")
         self.live_price.set(f"{float(latest_close):.4f}" if latest_close not in (None, "") else "-")
         self.live_size.set(str(report.get("suggested_size") or "-"))
-        self.live_max_alloc.set(self._format_live_auto_max_allocation(auto_max_alloc))
         self.live_fixed_size.set(self._format_live_fixed_size(auto_fixed_size))
         self.live_account_balance.set(f"{float(report.get('total_assets', 0.0)):,.2f}")
         self.live_win_rate.set(win_rate)
@@ -1460,48 +1444,6 @@ class TradingDesktopApp(Tk):
             "slow_ema": slow_value,
         }
 
-    def _resolve_live_auto_max_allocation_pct(
-        self,
-        *,
-        report: dict,
-        request_payload: dict | None = None,
-        signal_frame: pd.DataFrame | None = None,
-    ) -> float | None:
-        request_payload = request_payload if isinstance(request_payload, dict) else {}
-        if signal_frame is None or signal_frame.empty or "atr" not in signal_frame.columns:
-            return None
-
-        try:
-            atr_value = float(pd.to_numeric(signal_frame["atr"], errors="coerce").dropna().iloc[-1])
-        except Exception:
-            return None
-
-        stop_mult = self._optional_float(str(request_payload.get("stop_loss_atr_multiplier") or self.live_stop_atr.get() or "").strip() or "0")
-        risk_amount = self._optional_float(str(request_payload.get("risk_amount") or self.live_risk.get() or "").strip() or "0")
-        leverage = self._optional_float(str(request_payload.get("leverage") or self.live_leverage.get() or "").strip() or "1")
-        latest_close = self._optional_float(str(report.get("latest_close") or "").strip() or "0")
-        available_margin = self._optional_float(str(report.get("quote_balance") or "").strip() or "0")
-
-        if atr_value <= 0.0 or stop_mult is None or stop_mult <= 0.0:
-            return None
-        if risk_amount is None or risk_amount <= 0.0 or latest_close is None or latest_close <= 0.0:
-            return None
-        if available_margin is None or available_margin <= 0.0:
-            return None
-
-        leverage_value = max(float(leverage or 0.0), 1.0)
-        stop_distance = atr_value * float(stop_mult)
-        if stop_distance <= 0.0:
-            return None
-
-        desired_qty = float(risk_amount) / stop_distance
-        capital_base = float(available_margin) * leverage_value
-        if desired_qty <= 0.0 or capital_base <= 0.0:
-            return None
-
-        desired_notional = desired_qty * float(latest_close)
-        return max(desired_notional / capital_base, 0.0)
-
     def _resolve_live_auto_fixed_size(
         self,
         *,
@@ -1524,10 +1466,10 @@ class TradingDesktopApp(Tk):
         if risk_amount is None or risk_amount <= 0.0:
             return None
 
-        stop_distance = atr_value * float(stop_mult)
-        if stop_distance <= 0.0:
+        scaled_atr = float(risk_amount) / atr_value
+        if scaled_atr <= 0.0:
             return None
-        return max(float(risk_amount) / stop_distance, 0.0)
+        return max(scaled_atr * float(stop_mult), 0.0)
 
     def _capture_current_live_api_profile(self) -> dict[str, str]:
         profile_name = self.live_api_profile.get().strip() or "API 1"
@@ -1739,7 +1681,7 @@ class TradingDesktopApp(Tk):
         log_scrollbar = ttk.Scrollbar(log_shell, orient="vertical", command=self.log_text.yview)
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scrollbar.set)
-        self.log_text.insert("end", "\u7a0b\u5e8f\u5df2\u542f\u52a8\u3002\n")
+        self.log_text.insert("end", "回测日志已启动（详细模式）。\n")
         self.log_text.configure(state="disabled")
 
         metric_box = ttk.LabelFrame(parent, text="\u5f53\u524d\u56de\u6d4b\u6307\u6807", style="Setup.TLabelframe", padding=(12, 10))
@@ -1773,7 +1715,7 @@ class TradingDesktopApp(Tk):
         log_scrollbar = ttk.Scrollbar(log_shell, orient="vertical", command=self.live_log_text.yview)
         log_scrollbar.grid(row=0, column=1, sticky="ns")
         self.live_log_text.configure(yscrollcommand=log_scrollbar.set)
-        self.live_log_text.insert("end", "实盘日志已启动。\n")
+        self.live_log_text.insert("end", "实盘日志已启动（详细模式）。\n")
         self.live_log_text.configure(state="disabled")
 
     def _build_backtest_metric_card(self, parent: ttk.Frame) -> None:
@@ -3952,7 +3894,7 @@ class TradingDesktopApp(Tk):
         self._reset_kline_preview_view()
         self._schedule_bt_drawdown_preview()
         self._schedule_kline_preview()
-        self._log("\u5f00\u59cb\u6267\u884c\u56de\u6d4b\u3002")
+        self._log("开始执行回测，正在整理参数并准备载入数据。")
         worker = threading.Thread(target=self._run_backtest_worker, daemon=True)
         worker.start()
 
@@ -3984,6 +3926,7 @@ class TradingDesktopApp(Tk):
                 periods=[selected_period],
                 output_dir=str(Path("desktop_reports")),
             )
+            self.event_queue.put(("backtest_trace", self._build_backtest_request_log_text(request)))
             result = run_backtest(request)
             self.event_queue.put(("backtest_ok", result))
         except Exception as exc:
@@ -4003,16 +3946,17 @@ class TradingDesktopApp(Tk):
         if not self._ensure_live_credentials_ready():
             return
         self._apply_history_bar_limit(self.live_bars, period=self.live_period.get(), default=240, label="扫描K线数")
+        request = self._collect_live_request()
         self.live_status.set("\u6b63\u5728\u68c0\u67e5\u5b9e\u65f6\u4fe1\u53f7...")
-        self._live_log("\u5f00\u59cb\u6267\u884c\u5b9e\u65f6\u4fe1\u53f7\u68c0\u67e5\u3002")
-        worker = threading.Thread(target=self._run_live_once_worker, daemon=True)
+        self._live_log(self._build_live_request_log_text(request, headline="开始执行单次实时信号检查"))
+        worker = threading.Thread(target=self._run_live_once_worker, args=(request,), daemon=True)
         worker.start()
 
-    def _run_live_once_worker(self) -> None:
+    def _run_live_once_worker(self, request: LiveRequest) -> None:
         attempt = 0
         while True:
             try:
-                result = run_live_check(self._collect_live_request())
+                result = run_live_check(request)
                 self.event_queue.put(("live_ok", result))
                 return
             except Exception as exc:
@@ -4096,11 +4040,7 @@ class TradingDesktopApp(Tk):
         status_message = f"{strategy_name} 轮询中..."
         if had_running_before:
             status_message = f"{strategy_name} 已加入轮询，当前已运行 {len(self.live_strategy_workers)} 个策略。"
-        self._live_log(
-            f"开始实时轮询：{strategy_name} | 账户={self.live_strategy_records[strategy_id].get('account', '-')} "
-            f"| 币种={self.live_strategy_records[strategy_id].get('symbol', '-')} "
-            f"| 信号方向={self.live_strategy_records[strategy_id].get('signal_side', '-')}"
-        )
+        self._live_log(self._build_live_request_log_text(request, headline=f"开始实时轮询：{strategy_name}"))
         if had_running_before and current_view_id in self.live_strategy_records:
             self._apply_selected_live_strategy_view(strategy_id=current_view_id)
         else:
@@ -4228,6 +4168,114 @@ class TradingDesktopApp(Tk):
     def _open_drawdown_chart(self) -> None:
         self._open_backtest_chart()
 
+    @staticmethod
+    def _timestamped_message(message: str) -> str:
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        raw_lines = [str(line).rstrip() for line in str(message).splitlines()]
+        lines = [line for line in raw_lines if line.strip()]
+        if not lines:
+            lines = ["-"]
+        return "\n".join([f"[{stamp}] {lines[0]}"] + [f"           {line}" for line in lines[1:]])
+
+    @staticmethod
+    def _format_log_range(start: str | None, end: str | None) -> str:
+        if start or end:
+            return f"{start or '-'} 到 {end or '-'}"
+        return "自动范围"
+
+    def _format_live_run_mode_text(self, *, execute: bool, simulate: bool) -> str:
+        if execute and simulate:
+            return "模拟并下单"
+        if execute:
+            return "交易并下单"
+        return "仅信号检查"
+
+    def _build_backtest_request_log_text(self, request: BacktestRequest) -> str:
+        periods_text = "/".join(request.periods or [request.source_bar or "-"])
+        source_text = f"手动CSV：{Path(request.csv).name}" if request.csv else "本地缓存优先，不足自动补 OKX"
+        return "\n".join(
+            [
+                "回测任务已创建",
+                f"策略={self.bt_strategy.get().strip() or STRATEGY_OPTION_LABEL}",
+                f"标的={self.bt_symbol.get().strip()} -> {request.symbol}",
+                f"周期={periods_text} | 基准K线={request.source_bar} | 时间段={self._format_log_range(request.start, request.end)}",
+                f"历史K线={request.history_bars} | 抓取基准K线={request.history_bars_1h} | 信号方向={self._translate_signal_side(request.signal_side)}",
+                f"EMA={request.fast_ema}/{request.slow_ema} | 止损ATR={request.stop_loss_atr_multiplier} | 止盈ATR={request.take_profit_r_multiple}",
+                f"初始资金={request.initial_cash:,.2f} | 风险金={request.risk_amount:,.2f} | 最大资金占比={request.max_allocation_pct:g}",
+                f"手续费={request.fee_bps:g}bps | 滑点={request.slippage_bps:g}bps | 数据模式={source_text}",
+            ]
+        )
+
+    def _build_backtest_result_log_text(self, result: dict) -> str:
+        best_row = next((row for row in (result.get("sltp_matrix") or []) if isinstance(row, dict) and bool(row.get("is_best"))), None)
+        combo_label = "-"
+        trades = "-"
+        win_rate = "-"
+        net_pnl = "-"
+        drawdown = "-"
+        if isinstance(best_row, dict):
+            combo_label = str(best_row.get("combo_label") or "-")
+            trades = str(best_row.get("trade_count") or "-")
+            win_rate = f"{float(best_row.get('win_rate', 0.0)):.2f}%"
+            net_pnl = f"{float(best_row.get('net_pnl', 0.0)):+,.2f}"
+            drawdown = f"{float(best_row.get('max_drawdown_pct', 0.0)):.2f}%"
+
+        return "\n".join(
+            [
+                "回测完成",
+                f"标的={result.get('symbol', '-')} | 最优周期={result.get('top_period', '-')} | 综合得分={float(result.get('top_score', 0.0)):.2f}",
+                f"当前最佳组合={combo_label} | 交易笔数={trades} | 胜率={win_rate}",
+                f"净收益={net_pnl} | 最大回撤={drawdown} | 自定义时间段={self._current_backtest_time_range_text()}",
+            ]
+        )
+
+    def _build_live_request_log_text(self, request: LiveRequest, *, headline: str) -> str:
+        return "\n".join(
+            [
+                headline,
+                f"账户={self._live_api_profile_option_label(request.account_tag or 'API 1')} | 运行模式={self._format_live_run_mode_text(execute=request.execute, simulate=request.simulate)}",
+                f"信号标的={self._display_live_strategy_symbol(request.signal_symbol or request.symbol)} | 下单标的={self._display_live_strategy_symbol(request.symbol)}",
+                f"周期={request.period} | 信号方向={self._translate_signal_side(request.signal_side)} | 扫描K线数={request.bars}",
+                f"EMA={request.fast_ema}/{request.slow_ema} | ATR={request.atr_period} | 止损ATR={request.stop_loss_atr_multiplier} | 止盈ATR={request.take_profit_r_multiple}",
+                f"风险金={request.risk_amount:,.2f} | 最大资金占比={request.max_allocation_pct:g} | 杠杆={request.leverage}x | 轮询秒数={request.poll_interval}",
+            ]
+        )
+
+    def _build_live_result_log_text(
+        self,
+        *,
+        strategy_name: str,
+        request_payload: dict,
+        report: dict,
+        account_label: str,
+        translated_reason: str,
+        fast_value: int,
+        slow_value: int,
+        win_rate: str,
+        auto_fixed_size: float | None,
+    ) -> str:
+        execute = bool(request_payload.get("execute"))
+        simulate = bool(request_payload.get("simulate"))
+        execution = report.get("execution") or {}
+        execution_status = str(execution.get("status") or "-") if isinstance(execution, dict) else "-"
+        execution_id = str(execution.get("cl_ord_id") or "-") if isinstance(execution, dict) else "-"
+        fixed_size_text = self._format_live_fixed_size(auto_fixed_size) if auto_fixed_size is not None else "-"
+        symbol_text = self._display_live_strategy_symbol(str(request_payload.get("symbol") or request_payload.get("signal_symbol") or "-"))
+        signal_symbol_text = self._display_live_strategy_symbol(str(request_payload.get("signal_symbol") or request_payload.get("symbol") or "-"))
+        return "\n".join(
+            [
+                f"{strategy_name} 检查完成",
+                f"账户={account_label} | 运行模式={self._format_live_run_mode_text(execute=execute, simulate=simulate)}",
+                f"信号标的={signal_symbol_text} | 下单标的={symbol_text} | 周期={request_payload.get('period', '-')}",
+                f"信号方向={self._translate_signal_side(str(request_payload.get('signal_side') or '-'))} | EMA={fast_value}/{slow_value} | ATR={request_payload.get('atr_period', '-')}",
+                f"止损ATR={request_payload.get('stop_loss_atr_multiplier', '-')} | 止盈ATR={request_payload.get('take_profit_r_multiple', '-')}",
+                f"动作={self._translate_action(str(report.get('action') or '-'))} | 原因={translated_reason} | 信号时间={report.get('signal_ts') or '-'}",
+                f"最新收盘={float(report.get('latest_close', 0.0)):.4f} | 建议数量={report.get('suggested_size') or '-'} | 固定数量={fixed_size_text}",
+                f"账户余额={float(report.get('total_assets', 0.0)):,.2f} | 今日盈亏={float(report.get('today_pnl', 0.0)):+,.2f} | 总盈亏={float(report.get('total_pnl', 0.0)):+,.2f} | 胜率={win_rate}",
+                f"订单状态={execution_status} | 订单号={execution_id}",
+            ]
+        )
+
     def _clear_log(self) -> None:
         self._replace_log_text(self.log_text, "\u65e5\u5fd7\u5df2\u6e05\u7a7a\u3002\n")
 
@@ -4243,6 +4291,8 @@ class TradingDesktopApp(Tk):
 
             if event == "backtest_ok":
                 self._handle_backtest_result(payload)
+            elif event == "backtest_trace":
+                self._log(str(payload))
             elif event == "live_ok":
                 strategy_id = None
                 live_result = payload
@@ -4251,6 +4301,8 @@ class TradingDesktopApp(Tk):
                     live_result = payload.get("result")
                 if isinstance(live_result, dict):
                     self._handle_live_result(live_result, strategy_id=strategy_id)
+            elif event == "live_trace":
+                self._live_log(str(payload))
             elif event == "live_loop_error":
                 if isinstance(payload, dict):
                     strategy_id = str(payload.get("strategy_id") or "").strip()
@@ -4341,7 +4393,7 @@ class TradingDesktopApp(Tk):
         self._schedule_bt_drawdown_preview()
         self._schedule_kline_preview()
 
-        self._log(f"\u56de\u6d4b\u5b8c\u6210\uff1a\u6700\u4f18\u5468\u671f {top_period}")
+        self._log(self._build_backtest_result_log_text(result))
         self._log(f"K\u7ebf\u56fe\uff1a{self.latest_trade_chart_path}")
         self._log(f"\u56de\u64a4\u56fe\uff1a{self.latest_drawdown_chart_path}")
         period_sources = result.get("period_data_sources")
@@ -4370,11 +4422,6 @@ class TradingDesktopApp(Tk):
         win_rate = self._format_live_win_rate(trades_df)
         bundle = self._build_live_chart_bundle(result)
         signal_frame = bundle.signal_frame if isinstance(bundle, BacktestChartBundle) else None
-        auto_max_alloc = self._resolve_live_auto_max_allocation_pct(
-            report=report,
-            request_payload=request_payload,
-            signal_frame=signal_frame,
-        )
         auto_fixed_size = self._resolve_live_auto_fixed_size(
             request_payload=request_payload,
             signal_frame=signal_frame,
@@ -4411,15 +4458,17 @@ class TradingDesktopApp(Tk):
             self._live_log("当前这次真实仓位检查已自动按 OKX 模拟盘 API 方式完成。")
 
         self._live_log(
-            f"{strategy_name} 信号检查完成："
-            f"\u52a8\u4f5c={self._translate_action(str(report['action']))} "
-            f"\u539f\u56e0={translated_reason} "
-            f"\u6536\u76d8\u4ef7={float(report['latest_close']):.4f} "
-            f"\u5efa\u8bae\u6570\u91cf={report.get('suggested_size') or '-'} "
-            f"\u8d26\u6237\u4f59\u989d={float(report.get('total_assets', 0.0)):,.2f} "
-            f"\u80dc\u7387={win_rate} "
-            f"\u4eca\u65e5\u76c8\u4e8f={float(report.get('today_pnl', 0.0)):+,.2f} "
-            f"\u603b\u76c8\u4e8f={float(report.get('total_pnl', 0.0)):+,.2f}"
+            self._build_live_result_log_text(
+                strategy_name=strategy_name,
+                request_payload=request_payload,
+                report=report,
+                account_label=account_label,
+                translated_reason=translated_reason,
+                fast_value=fast_value,
+                slow_value=slow_value,
+                win_rate=win_rate,
+                auto_fixed_size=auto_fixed_size,
+            )
         )
 
         if strategy_id is None:
@@ -4430,7 +4479,6 @@ class TradingDesktopApp(Tk):
             self.live_reason.set(translated_reason)
             self.live_price.set(f"{float(report['latest_close']):.4f}")
             self.live_size.set(str(report.get("suggested_size") or "-"))
-            self.live_max_alloc.set(self._format_live_auto_max_allocation(auto_max_alloc))
             self.live_fixed_size.set(self._format_live_fixed_size(auto_fixed_size))
             self.live_account_balance.set(f"{float(report.get('total_assets', 0.0)):,.2f}")
             self.live_win_rate.set(win_rate)
@@ -4508,7 +4556,7 @@ class TradingDesktopApp(Tk):
         if widget is None or not widget.winfo_exists():
             return
         widget.configure(state="normal")
-        widget.insert("1.0", f"{message}\n")
+        widget.insert("1.0", f"{TradingDesktopApp._timestamped_message(message)}\n")
         widget.configure(state="disabled")
 
     def _log(self, message: str) -> None:
