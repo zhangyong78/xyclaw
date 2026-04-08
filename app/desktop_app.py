@@ -2430,12 +2430,26 @@ class TradingDesktopApp(Tk):
         self.page_canvas.yview_scroll(steps, "units")
         return "break"
 
-    def _add_entry(self, parent: ttk.Frame, row: int, column: int, label: str, variable: StringVar, *, show: str | None = None, width: int = 16) -> None:
+    def _add_entry(
+        self,
+        parent: ttk.Frame,
+        row: int,
+        column: int,
+        label: str,
+        variable: StringVar,
+        *,
+        show: str | None = None,
+        width: int = 16,
+        state: str | None = None,
+    ) -> None:
         cell = ttk.Frame(parent, style="Card.TFrame")
         cell.grid(row=row, column=column, sticky="ew", padx=6, pady=6)
         cell.columnconfigure(0, weight=1)
         ttk.Label(cell, text=label, style="Muted.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(cell, textvariable=variable, width=width, show=show or "").grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        entry = ttk.Entry(cell, textvariable=variable, width=width, show=show or "")
+        if state:
+            entry.configure(state=state)
+        entry.grid(row=1, column=0, sticky="ew", pady=(6, 0))
 
     def _add_combo(
         self,
