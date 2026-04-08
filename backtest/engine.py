@@ -39,14 +39,18 @@ class BacktestEngine:
                         pending=pending,
                         position_side=entry_side,
                     )
-                    qty = calculate_position_size(
-                        entry_price=entry_price,
-                        stop_price=stop_price,
-                        risk_amount=self.config.risk_amount,
-                        available_cash=cash,
-                        max_allocation_pct=self.config.max_allocation_pct,
-                        side=entry_side,
-                    )
+                    configured_fixed_qty = self.config.fixed_position_qty
+                    if configured_fixed_qty is not None and float(configured_fixed_qty) > 0.0:
+                        qty = float(configured_fixed_qty)
+                    else:
+                        qty = calculate_position_size(
+                            entry_price=entry_price,
+                            stop_price=stop_price,
+                            risk_amount=self.config.risk_amount,
+                            available_cash=cash,
+                            max_allocation_pct=self.config.max_allocation_pct,
+                            side=entry_side,
+                        )
                     if qty > 0:
                         entry_fee = calc_fee(entry_price * qty, self.config.fee_bps)
                         if entry_side == "long":

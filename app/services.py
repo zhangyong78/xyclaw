@@ -40,6 +40,7 @@ class BacktestRequest:
     slow_ema: int = 55
     atr_period: int = 10
     hold_bars: int = 0
+    fixed_position_qty: float | None = None
     max_allocation_pct: float = 0.95
     signal_side: str = "long_only"
     stop_loss_atr_multiplier: float | None = None
@@ -168,6 +169,7 @@ def run_backtest(request: BacktestRequest) -> dict[str, Any]:
         slow_ema=request.slow_ema,
         atr_period=request.atr_period,
         hold_bars=request.hold_bars,
+        fixed_position_qty=request.fixed_position_qty,
         max_allocation_pct=request.max_allocation_pct,
         signal_side=request.signal_side,
         stop_loss_atr_multiplier=request.stop_loss_atr_multiplier,

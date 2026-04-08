@@ -23,6 +23,8 @@ from app.services import (
     submit_live_manual_limit_order,
     sync_local_period_cache,
 )
+from core.indicators import atr
+from data.resample import load_1h_csv, resample_bars
 
 
 APP_TITLE = "OKX \u91cf\u5316\u4ea4\u6613\u684c\u9762\u7a0b\u5e8f"
@@ -154,6 +156,7 @@ class TradingDesktopApp(Tk):
         self._live_kline_preview_mark_bundle_id: int | None = None
         self._live_kline_preview_trade_marks: list[tuple[str, str, int, float]] = []
         self._bt_csv_auto_managed = True
+        self._bt_fixed_size_job: str | None = None
         self._auto_4h_cache_job: str | None = None
         self._auto_4h_cache_running = False
 
@@ -208,6 +211,7 @@ class TradingDesktopApp(Tk):
         self.bt_signal_side = StringVar(value="\u53cc\u5411")
         self.bt_stop_atr = StringVar(value="1")
         self.bt_take_atr = StringVar(value="2")
+        self.bt_fixed_size = StringVar(value="-")
 
         self.live_strategy = StringVar(value=STRATEGY_OPTION_LABEL)
         self.live_symbol = StringVar(value="BTCUSDT永续")
@@ -289,16 +293,54 @@ class TradingDesktopApp(Tk):
     def _bind_backtest_csv_defaults(self) -> None:
         self.bt_symbol.trace_add("write", self._on_backtest_cache_selector_changed)
         self.bt_periods.trace_add("write", self._on_backtest_cache_selector_changed)
+        self.bt_csv.trace_add("write", self._on_backtest_fixed_size_input_changed)
+        self.bt_risk.trace_add("write", self._on_backtest_fixed_size_input_changed)
+        self.bt_stop_atr.trace_add("write", self._on_backtest_fixed_size_input_changed)
+        self.bt_bars.trace_add("write", self._on_backtest_fixed_size_input_changed)
+        self.bt_start.trace_add("write", self._on_backtest_fixed_size_input_changed)
+        self.bt_end.trace_add("write", self._on_backtest_fixed_size_input_changed)
         self._sync_backtest_csv_default()
+        self._schedule_backtest_fixed_size_refresh()
 
     def _on_backtest_cache_selector_changed(self, *_args: object) -> None:
         self._sync_backtest_csv_default()
+        self._schedule_backtest_fixed_size_refresh()
+
+    def _on_backtest_fixed_size_input_changed(self, *_args: object) -> None:
+        self._schedule_backtest_fixed_size_refresh()
 
     def _sync_backtest_csv_default(self) -> None:
         if not self._bt_csv_auto_managed:
             return
         default_path = self._default_backtest_cache_csv_path(self.bt_symbol.get(), self.bt_periods.get())
         self.bt_csv.set(str(default_path))
+
+    def _schedule_backtest_fixed_size_refresh(self, *, delay_ms: int = 180) -> None:
+        if self._bt_fixed_size_job is not None:
+            try:
+                self.after_cancel(self._bt_fixed_size_job)
+            except Exception:
+                pass
+        self._bt_fixed_size_job = self.after(max(1, int(delay_ms)), self._refresh_backtest_fixed_size_preview)
+
+    def _refresh_backtest_fixed_size_preview(self) -> None:
+        self._bt_fixed_size_job = None
+        try:
+            selected_period = self._normalize_backtest_period(self.bt_periods.get())
+            requested_bars = self._normalize_history_bar_count(self.bt_bars.get(), period=selected_period, default=2000)
+            start_text, end_text = self._resolve_backtest_time_range()
+        except Exception:
+            self.bt_fixed_size.set("-")
+            return
+
+        auto_fixed_size = self._resolve_backtest_auto_fixed_size(
+            period=selected_period,
+            requested_bars=requested_bars,
+            csv_path=(self.bt_csv.get().strip() or None),
+            start=start_text,
+            end=end_text,
+        )
+        self.bt_fixed_size.set(self._format_live_fixed_size(auto_fixed_size) if auto_fixed_size is not None else "-")
 
     @classmethod
     def _default_backtest_cache_csv_path(cls, symbol: str, period: str) -> Path:
@@ -670,7 +712,7 @@ class TradingDesktopApp(Tk):
         headings = {
             "trade_no": "第几次交易",
             "side": "方向",
-            "quantity": "数量",
+            "quantity": "开单数量(币)",
             "entry_ts": "进场时间",
             "entry_price": "进场价格",
             "atr_value": "ATR值",
@@ -782,8 +824,9 @@ class TradingDesktopApp(Tk):
         self._add_combo(form, 2, 3, "信号方向", self.bt_signal_side, SIGNAL_SIDE_OPTIONS, state="readonly")
         self._add_entry(form, 3, 0, "止损 ATR 倍数", self.bt_stop_atr)
         self._add_entry(form, 3, 1, "止盈 ATR 倍数", self.bt_take_atr)
-        self._add_entry(form, 3, 2, "开始时间", self.bt_start)
-        self._add_entry(form, 3, 3, "结束时间", self.bt_end)
+        self._add_entry(form, 3, 2, "固定数量", self.bt_fixed_size, state="readonly")
+        self._add_entry(form, 4, 0, "开始时间", self.bt_start)
+        self._add_entry(form, 4, 1, "结束时间", self.bt_end)
 
         file_row = ttk.Frame(parent, style="Card.TFrame")
         file_row.grid(row=2, column=0, sticky="ew", pady=(14, 0))
@@ -793,7 +836,7 @@ class TradingDesktopApp(Tk):
         ttk.Button(file_row, text="\u9009\u62e9\u6587\u4ef6", command=self._pick_csv).grid(row=1, column=1, padx=(10, 0), pady=(6, 0))
         ttk.Label(
             file_row,
-            text="默认优先读取 desktop_reports/cache 里的本地同币种同周期K线，不足会自动去 OKX 补齐；时间格式支持 20250101、2025-01-01、2025 1 1、202501010800、2025-01-01 08:00、2025年1月1日。",
+            text="默认优先读取 desktop_reports/cache 里的本地同币种同周期K线，不足会自动去 OKX 补齐；固定数量会按 风险金 ÷ 当前ATR × 止损ATR倍数 自动换算为币数量；时间格式支持 20250101、2025-01-01、2025 1 1、202501010800、2025-01-01 08:00、2025年1月1日。",
             style="Muted.TLabel",
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
@@ -1496,6 +1539,141 @@ class TradingDesktopApp(Tk):
             return None
         return max(scaled_atr * float(stop_mult), 0.0)
 
+    def _resolve_backtest_auto_fixed_size(
+        self,
+        *,
+        period: str,
+        requested_bars: int,
+        csv_path: str | None,
+        start: str | None,
+        end: str | None,
+    ) -> float | None:
+        bars = self._load_backtest_fixed_size_bars(
+            period=period,
+            requested_bars=requested_bars,
+            csv_path=csv_path,
+            start=start,
+            end=end,
+        )
+        if bars.empty:
+            return None
+
+        try:
+            atr_value = float(atr(bars["high"], bars["low"], bars["close"], 10).dropna().iloc[-1])
+        except Exception:
+            return None
+
+        stop_mult = self._optional_float((self.bt_stop_atr.get() or "").strip() or "0")
+        risk_amount = self._optional_float((self.bt_risk.get() or "").strip() or "0")
+        if atr_value <= 0.0 or stop_mult is None or stop_mult <= 0.0:
+            return None
+        if risk_amount is None or risk_amount <= 0.0:
+            return None
+
+        scaled_atr = float(risk_amount) / atr_value
+        if scaled_atr <= 0.0:
+            return None
+        return max(scaled_atr * float(stop_mult), 0.0)
+
+    def _load_backtest_fixed_size_bars(
+        self,
+        *,
+        period: str,
+        requested_bars: int,
+        csv_path: str | None,
+        start: str | None,
+        end: str | None,
+    ) -> pd.DataFrame:
+        path_text = (csv_path or "").strip()
+        if not path_text:
+            return pd.DataFrame()
+
+        source_path = Path(path_text)
+        if not source_path.exists():
+            return pd.DataFrame()
+
+        try:
+            source_frame = load_1h_csv(source_path)
+        except Exception:
+            return pd.DataFrame()
+
+        filtered = self._filter_backtest_fixed_size_time_range(source_frame, start=start, end=end)
+        csv_period = self._infer_backtest_csv_period(source_path)
+        target_period = self._normalize_backtest_period(period)
+
+        if csv_period == target_period or csv_period is None:
+            bars = filtered.copy()
+        elif self._can_resample_backtest_csv_period(csv_period, target_period):
+            try:
+                bars = resample_bars(filtered, target_period)
+            except Exception:
+                return pd.DataFrame()
+        else:
+            return pd.DataFrame()
+
+        if not (start or end):
+            bars = bars.tail(max(int(requested_bars), 1))
+        return bars.sort_index()
+
+    @staticmethod
+    def _infer_backtest_csv_period(path: Path) -> str | None:
+        match = re.search(r"_((?:\d+)(?:m|H|D))\.csv$", path.name, flags=re.IGNORECASE)
+        if not match:
+            return None
+        raw = match.group(1).upper()
+        if raw == "1D":
+            return "24H"
+        if raw.endswith("M"):
+            return raw[:-1] + "m"
+        return raw
+
+    @staticmethod
+    def _period_to_minutes(period: str) -> int | None:
+        mapping = {
+            "5m": 5,
+            "15m": 15,
+            "30m": 30,
+            "1H": 60,
+            "4H": 240,
+            "24H": 1440,
+        }
+        return mapping.get(period)
+
+    @classmethod
+    def _can_resample_backtest_csv_period(cls, source_period: str | None, target_period: str) -> bool:
+        if not source_period:
+            return False
+        source_minutes = cls._period_to_minutes(source_period)
+        target_minutes = cls._period_to_minutes(target_period)
+        if source_minutes is None or target_minutes is None:
+            return False
+        return source_minutes <= target_minutes and target_minutes % source_minutes == 0
+
+    @staticmethod
+    def _filter_backtest_fixed_size_time_range(
+        frame: pd.DataFrame,
+        *,
+        start: str | None,
+        end: str | None,
+    ) -> pd.DataFrame:
+        filtered = frame
+        index_tz = getattr(frame.index, "tz", None)
+        if start:
+            start_ts = pd.Timestamp(start)
+            if index_tz is not None and start_ts.tzinfo is None:
+                start_ts = start_ts.tz_localize(index_tz)
+            elif index_tz is None and start_ts.tzinfo is not None:
+                start_ts = start_ts.tz_localize(None)
+            filtered = filtered[filtered.index >= start_ts]
+        if end:
+            end_ts = pd.Timestamp(end)
+            if index_tz is not None and end_ts.tzinfo is None:
+                end_ts = end_ts.tz_localize(index_tz)
+            elif index_tz is None and end_ts.tzinfo is not None:
+                end_ts = end_ts.tz_localize(None)
+            filtered = filtered[filtered.index <= end_ts]
+        return filtered
+
     def _capture_current_live_api_profile(self) -> dict[str, str]:
         profile_name = self.live_api_profile.get().strip() or "API 1"
         existing = self.live_api_profiles.get(profile_name, {})
@@ -1813,7 +1991,7 @@ class TradingDesktopApp(Tk):
         headings = {
             "trade_no": "第几次交易",
             "side": "方向",
-            "quantity": "数量",
+            "quantity": "开单数量(币)",
             "entry_ts": "进场时间",
             "entry_price": "进场价格",
             "atr_value": "ATR值",
@@ -1885,7 +2063,7 @@ class TradingDesktopApp(Tk):
         headings = {
             "trade_no": "第几次交易",
             "side": "方向",
-            "quantity": "数量",
+            "quantity": "开单数量(币)",
             "entry_ts": "进场时间",
             "entry_price": "进场价格",
             "atr_value": "ATR值",
@@ -3802,6 +3980,7 @@ class TradingDesktopApp(Tk):
         if path:
             self._bt_csv_auto_managed = False
             self.bt_csv.set(path)
+            self._schedule_backtest_fixed_size_refresh()
 
     @classmethod
     def _history_bar_limit_for_period(cls, period: str) -> int | None:
@@ -3929,6 +4108,13 @@ class TradingDesktopApp(Tk):
             requested_bars = self._normalize_history_bar_count(self.bt_bars.get(), period=selected_period, default=2000)
             start_text, end_text = self._resolve_backtest_time_range()
             manual_csv = None if self._bt_csv_auto_managed else (self.bt_csv.get().strip() or None)
+            auto_fixed_size = self._resolve_backtest_auto_fixed_size(
+                period=selected_period,
+                requested_bars=requested_bars,
+                csv_path=(self.bt_csv.get().strip() or None),
+                start=start_text,
+                end=end_text,
+            )
             request = BacktestRequest(
                 symbol=self._normalize_swap_symbol(self.bt_symbol.get()),
                 csv=manual_csv,
@@ -3948,6 +4134,7 @@ class TradingDesktopApp(Tk):
                 signal_side=self._normalize_signal_side(self.bt_signal_side.get()),
                 stop_loss_atr_multiplier=float(self.bt_stop_atr.get() or "1"),
                 take_profit_r_multiple=float(self.bt_take_atr.get() or "2"),
+                fixed_position_qty=auto_fixed_size,
                 periods=[selected_period],
                 output_dir=str(Path("desktop_reports")),
             )
@@ -4294,7 +4481,7 @@ class TradingDesktopApp(Tk):
                 f"周期={periods_text} | 基准K线={request.source_bar} | 时间段={self._format_log_range(request.start, request.end)}",
                 f"历史K线={request.history_bars} | 抓取基准K线={request.history_bars_1h} | 信号方向={self._translate_signal_side(request.signal_side)}",
                 f"EMA={request.fast_ema}/{request.slow_ema} | 止损ATR={request.stop_loss_atr_multiplier} | 止盈ATR={request.take_profit_r_multiple}",
-                f"初始资金={request.initial_cash:,.2f} | 风险金={request.risk_amount:,.2f} | 最大资金占比={request.max_allocation_pct:g}",
+                f"初始资金={request.initial_cash:,.2f} | 风险金={request.risk_amount:,.2f} | 固定数量={self._format_live_fixed_size(request.fixed_position_qty) if request.fixed_position_qty is not None else '-'} 币 | 最大资金占比={request.max_allocation_pct:g}",
                 f"手续费={request.fee_bps:g}bps | 滑点={request.slippage_bps:g}bps | 数据模式={source_text}",
             ]
         )
@@ -4318,7 +4505,7 @@ class TradingDesktopApp(Tk):
                 "回测完成",
                 f"标的={result.get('symbol', '-')} | 最优周期={result.get('top_period', '-')} | 综合得分={float(result.get('top_score', 0.0)):.2f}",
                 f"当前最佳组合={combo_label} | 交易笔数={trades} | 胜率={win_rate}",
-                f"净收益={net_pnl} | 最大回撤={drawdown} | 自定义时间段={self._current_backtest_time_range_text()}",
+                f"净收益={net_pnl} | 最大回撤={drawdown} | 固定数量={self._format_live_fixed_size(self._optional_float(str((result.get('request') or {}).get('fixed_position_qty') or '').strip())) if (result.get('request') or {}).get('fixed_position_qty') not in (None, '') else '-'} 币 | 自定义时间段={self._current_backtest_time_range_text()}",
             ]
         )
 
@@ -4480,6 +4667,8 @@ class TradingDesktopApp(Tk):
         self.kline_status.set(f"{result.get('symbol', '-')} {top_period} K\u7ebf\u56fe\u5df2\u751f\u6210\uff0c\u70b9\u51fb\u77e9\u9635\u5355\u5143\u683c\u53ef\u5207\u6362\u5bf9\u5e94\u7ec4\u5408\uff0c\u666e\u901a\u6eda\u8f6e\u53ef\u7ffb\u9875\uff0cCtrl+\u6eda\u8f6e\u7f29\u653e\uff0cShift+\u6eda\u8f6e\u6a2a\u79fb\uff0c\u5de6\u952e\u62d6\u52a8\u3002")
         self.top_period.set(top_period)
         self.top_score.set(f"{top_score:.2f}")
+        fixed_position_qty = self._optional_float(str((result.get("request") or {}).get("fixed_position_qty") or "").strip())
+        self.bt_fixed_size.set(self._format_live_fixed_size(fixed_position_qty) if fixed_position_qty is not None else "-")
         matrix_rows = result.get("sltp_matrix", [])
         self.sltp_matrix_rows = [row for row in matrix_rows if isinstance(row, dict)]
         self.selected_sltp_key = self._resolve_default_sltp_key(matrix_rows)

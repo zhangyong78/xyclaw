@@ -8,6 +8,7 @@ class BacktestConfig:
     symbol: str
     initial_cash: float = 10_000.0
     risk_amount: float = 100.0
+    fixed_position_qty: float | None = None
     fee_bps: float = 2.8
     slippage_bps: float = 2.0
     fast_ema: int = 21
