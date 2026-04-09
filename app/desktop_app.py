@@ -27,7 +27,8 @@ from core.indicators import atr
 from data.resample import load_1h_csv, resample_bars
 
 
-APP_TITLE = "OKX \u91cf\u5316\u4ea4\u6613\u684c\u9762\u7a0b\u5e8f"
+APP_VERSION = "v1.0.1"
+APP_TITLE = f"OKX \u91cf\u5316\u4ea4\u6613\u684c\u9762\u7a0b\u5e8f {APP_VERSION}"
 STRATEGY_OPTION_LABEL = "EMA金叉死叉"
 LIVE_STRATEGY_FORM_NONE = "不选"
 STRATEGY_TEXT = (
