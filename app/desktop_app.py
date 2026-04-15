@@ -27,7 +27,7 @@ from core.indicators import atr
 from data.resample import load_1h_csv, resample_bars
 
 
-APP_VERSION = "v1.0.1"
+APP_VERSION = "v1.0.2"
 APP_TITLE = f"OKX \u91cf\u5316\u4ea4\u6613\u684c\u9762\u7a0b\u5e8f {APP_VERSION}"
 STRATEGY_OPTION_LABEL = "EMA金叉死叉"
 LIVE_STRATEGY_FORM_NONE = "不选"
@@ -113,6 +113,11 @@ class TradingDesktopApp(Tk):
         self.live_strategy_records: dict[str, dict[str, str]] = {}
         self.live_strategy_workers: dict[str, dict[str, object]] = {}
         self.live_strategy_snapshots: dict[str, dict[str, object]] = {}
+        self.backtest_strategy_tree: ttk.Treeview | None = None
+        self.backtest_tasks: list[dict[str, object]] = []
+        self.backtest_task_results: list[dict[str, object]] = []
+        self.backtest_view_combos_all: list[ttk.Combobox] = []
+        self.backtest_view_combos_task: list[ttk.Combobox] = []
         self.active_live_strategy_id: str | None = None
         self._live_strategy_counter = 0
         self.live_strategy_form_map: dict[str, str] = {}
@@ -131,6 +136,8 @@ class TradingDesktopApp(Tk):
         self.backtest_page_frame: ttk.Frame | None = None
         self.live_page_frame: ttk.Frame | None = None
         self.live_clone_frame: ttk.Frame | None = None
+        self.backtest_log_path = Path("desktop_reports") / "logs" / "backtest.log"
+        self.live_log_path = Path("desktop_reports") / "logs" / "live.log"
         self.bt_drawdown_preview_canvas: Canvas | None = None
         self._bt_drawdown_preview_job: str | None = None
         self.kline_preview_canvas: Canvas | None = None
@@ -166,6 +173,7 @@ class TradingDesktopApp(Tk):
         self._bind_backtest_csv_defaults()
         self._load_live_api_profiles()
         self._refresh_live_action_account()
+        self._ensure_log_paths()
         self._build_layout()
         self.after(150, self._drain_queue)
         self._schedule_auto_4h_cache_sync(delay_ms=1200)
@@ -213,6 +221,8 @@ class TradingDesktopApp(Tk):
         self.bt_stop_atr = StringVar(value="1")
         self.bt_take_atr = StringVar(value="2")
         self.bt_fixed_size = StringVar(value="-")
+        self.backtest_view_slot = StringVar(value="全部")
+        self.backtest_view_slot_task = StringVar(value="")
 
         self.live_strategy = StringVar(value=STRATEGY_OPTION_LABEL)
         self.live_symbol = StringVar(value="BTCUSDT永续")
@@ -459,13 +469,28 @@ class TradingDesktopApp(Tk):
     def _build_backtest_page(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
 
-        backtest_card = ttk.Frame(parent, style="Card.TFrame", padding=18)
-        backtest_card.grid(row=0, column=0, sticky="nsew")
+        top_row = ttk.Frame(parent, style="Page.TFrame")
+        top_row.grid(row=0, column=0, sticky="nsew")
+        top_row.columnconfigure(0, weight=1, uniform="bt_top")
+        top_row.columnconfigure(1, weight=1, uniform="bt_top")
+
+        backtest_card = ttk.Frame(top_row, style="Card.TFrame", padding=18)
+        backtest_card.grid(row=0, column=0, sticky="nsew", padx=(0, 9))
         backtest_card.columnconfigure(0, weight=1)
         self._build_backtest_card(backtest_card)
 
+        backtest_strategy_card = ttk.Frame(top_row, style="Card.TFrame", padding=18)
+        backtest_strategy_card.grid(row=0, column=1, sticky="nsew", padx=(9, 0))
+        backtest_strategy_card.columnconfigure(0, weight=1)
+        self._build_backtest_strategy_card(backtest_strategy_card)
+
+        preview_card = ttk.Frame(parent, style="Card.TFrame", padding=18)
+        preview_card.grid(row=1, column=0, sticky="nsew", pady=(16, 18))
+        preview_card.columnconfigure(0, weight=1)
+        self._build_backtest_drawdown_card(preview_card)
+
         lower = ttk.Frame(parent, style="Page.TFrame")
-        lower.grid(row=1, column=0, sticky="nsew", pady=(16, 18))
+        lower.grid(row=2, column=0, sticky="nsew", pady=(0, 18))
         lower.columnconfigure(0, weight=3)
         lower.columnconfigure(1, weight=2)
 
@@ -482,12 +507,12 @@ class TradingDesktopApp(Tk):
         self._build_log_card(log_card)
 
         kline_card = ttk.Frame(parent, style="Card.TFrame", padding=18)
-        kline_card.grid(row=2, column=0, sticky="nsew", pady=(0, 18))
+        kline_card.grid(row=3, column=0, sticky="nsew", pady=(0, 18))
         kline_card.columnconfigure(0, weight=1)
         self._build_kline_preview_card(kline_card)
 
         trade_detail_card = ttk.Frame(parent, style="Card.TFrame", padding=18)
-        trade_detail_card.grid(row=3, column=0, sticky="nsew")
+        trade_detail_card.grid(row=4, column=0, sticky="nsew")
         trade_detail_card.columnconfigure(0, weight=1)
         self._build_trade_detail_card(trade_detail_card)
 
@@ -795,13 +820,18 @@ class TradingDesktopApp(Tk):
         return max(0, y - 8)
 
     def _build_backtest_card(self, parent: ttk.Frame) -> None:
-        parent.rowconfigure(5, weight=1)
+        parent.columnconfigure(0, weight=1)
 
         header = ttk.Frame(parent, style="Card.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="\u56de\u6d4b\u63a7\u5236", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(header, text="\u5f00\u59cb\u56de\u6d4b", style="Primary.TButton", command=self._start_backtest).grid(row=0, column=1, sticky="e")
+        ttk.Button(header, text="\u6dfb\u52a0\u5b50\u7b56\u7565", command=self._add_backtest_sub_strategy).grid(
+            row=0, column=1, sticky="e", padx=(0, 8)
+        )
+        ttk.Button(header, text="\u5f00\u59cb\u56de\u6d4b", style="Primary.TButton", command=self._start_backtest).grid(
+            row=0, column=2, sticky="e"
+        )
 
         form = ttk.Frame(parent, style="Card.TFrame")
         form.grid(row=1, column=0, sticky="ew", pady=(16, 0))
@@ -850,15 +880,79 @@ class TradingDesktopApp(Tk):
         ).grid(row=3, column=0, sticky="w", pady=(12, 0))
         ttk.Label(parent, textvariable=self.bt_status, style="Muted.TLabel").grid(row=4, column=0, sticky="w", pady=(10, 0))
 
-        preview_box = ttk.LabelFrame(parent, text="回撤概览", style="Setup.TLabelframe", padding=(12, 10))
-        preview_box.grid(row=5, column=0, sticky="nsew", pady=(14, 0))
-        preview_box.columnconfigure(0, weight=1)
-        preview_box.rowconfigure(0, weight=1)
+    def _build_backtest_drawdown_card(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
 
-        self.bt_drawdown_preview_canvas = Canvas(preview_box, height=220, bg="#10161d", highlightthickness=0, bd=0)
+        header = ttk.Frame(parent, style="Card.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="回撤概览", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="e")
+        self._add_backtest_view_selector(selector_bar, label="策略")
+
+        preview_shell = ttk.Frame(parent, style="Card.TFrame")
+        preview_shell.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        preview_shell.columnconfigure(0, weight=1)
+        preview_shell.rowconfigure(0, weight=1)
+
+        self.bt_drawdown_preview_canvas = Canvas(preview_shell, height=420, bg="#10161d", highlightthickness=0, bd=0)
         self.bt_drawdown_preview_canvas.grid(row=0, column=0, sticky="nsew")
         self.bt_drawdown_preview_canvas.bind("<Configure>", self._schedule_bt_drawdown_preview)
         self._schedule_bt_drawdown_preview()
+
+    def _build_backtest_strategy_card(self, parent: ttk.Frame) -> None:
+        parent.rowconfigure(2, weight=1)
+
+        header = ttk.Frame(parent, style="Card.TFrame")
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
+        ttk.Label(header, text="我的策略", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(header, text="停止此策略", command=self._stop_selected_backtest_strategy).grid(row=0, column=1, sticky="e")
+
+        ttk.Label(
+            parent,
+            text="添加子策略后会在这里汇总，点击开始回测会一起执行。",
+            style="Muted.TLabel",
+            wraplength=420,
+            justify="left",
+        ).grid(row=1, column=0, sticky="w", pady=(4, 4))
+
+        columns = ("strategy", "account", "symbol", "signal_side", "ema", "leverage", "stop_atr", "take_atr")
+        self.backtest_strategy_tree = ttk.Treeview(parent, columns=columns, show="headings", height=5, selectmode="browse")
+        self.backtest_strategy_tree.grid(row=2, column=0, sticky="nsew")
+
+        headings = {
+            "strategy": "策略",
+            "account": "账户",
+            "symbol": "币种",
+            "signal_side": "信号方向",
+            "ema": "EMA小/大",
+            "leverage": "杠杆",
+            "stop_atr": "止损ATR",
+            "take_atr": "止盈ATR",
+        }
+        widths = {
+            "strategy": 80,
+            "account": 110,
+            "symbol": 110,
+            "signal_side": 90,
+            "ema": 90,
+            "leverage": 70,
+            "stop_atr": 80,
+            "take_atr": 80,
+        }
+        for column in columns:
+            self.backtest_strategy_tree.heading(column, text=headings[column])
+            self.backtest_strategy_tree.column(column, width=widths[column], anchor="center")
+
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=self.backtest_strategy_tree.yview)
+        self.backtest_strategy_tree.configure(yscroll=scrollbar.set)
+        scrollbar.grid(row=2, column=1, sticky="ns", padx=(6, 0))
+
 
     def _build_live_card(self, parent: ttk.Frame) -> None:
         parent.rowconfigure(3, weight=1)
@@ -1798,10 +1892,16 @@ class TradingDesktopApp(Tk):
         header = ttk.Frame(parent, style="Card.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
+        header.columnconfigure(1, weight=0)
+        header.columnconfigure(2, weight=0)
         ttk.Label(header, text="\u56de\u6d4b\u7ed3\u679c", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
 
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        self._add_backtest_view_selector(selector_bar, label="回撤结果")
+
         button_bar = ttk.Frame(header, style="Card.TFrame")
-        button_bar.grid(row=0, column=1, sticky="e")
+        button_bar.grid(row=0, column=2, sticky="e")
         ttk.Button(button_bar, text="\u6253\u5f00\u56de\u6d4b\u603b\u56fe", command=self._open_backtest_chart).grid(row=0, column=0)
 
         summary_line = ttk.Frame(parent, style="Card.TFrame")
@@ -1873,7 +1973,8 @@ class TradingDesktopApp(Tk):
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="\u8fd0\u884c\u65e5\u5fd7", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(header, text="\u6e05\u7a7a\u65e5\u5fd7", command=self._clear_log).grid(row=0, column=1, sticky="e")
+        ttk.Button(header, text="\u6253\u5f00\u65e5\u5fd7", command=self._open_backtest_log_file).grid(row=0, column=1, sticky="e", padx=(0, 8))
+        ttk.Button(header, text="\u6e05\u7a7a\u65e5\u5fd7", command=self._clear_log).grid(row=0, column=2, sticky="e")
 
         log_shell = ttk.Frame(parent, style="Card.TFrame")
         log_shell.grid(row=1, column=0, sticky="ew", pady=(14, 0))
@@ -1892,6 +1993,106 @@ class TradingDesktopApp(Tk):
         metric_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         self._build_backtest_metric_card(metric_box)
 
+    def _add_backtest_view_selector(self, parent: ttk.Frame, *, label: str, allow_all: bool = True) -> None:
+        ttk.Label(parent, text=label, style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        variable = self.backtest_view_slot if allow_all else self.backtest_view_slot_task
+        combo = ttk.Combobox(
+            parent,
+            textvariable=variable,
+            values=["全部"] if allow_all else ["不选"],
+            width=7,
+            state="readonly",
+        )
+        combo.grid(row=0, column=1, sticky="w")
+        combo.bind(
+            "<<ComboboxSelected>>",
+            self._on_backtest_view_change if allow_all else self._on_backtest_view_change_task,
+        )
+        if allow_all:
+            self.backtest_view_combos_all.append(combo)
+        else:
+            self.backtest_view_combos_task.append(combo)
+
+    def _refresh_backtest_view_options(self) -> None:
+        if self.backtest_tasks:
+            ids = [str(task.get("strategy_id")) for task in self.backtest_tasks]
+        else:
+            ids = [str(item.get("strategy_id")) for item in self.backtest_task_results if item.get("strategy_id")]
+        options_all = ["全部"] + ids
+        options_task = ["不选"] + ids
+        for combo in self.backtest_view_combos_all:
+            combo.configure(values=options_all)
+        for combo in self.backtest_view_combos_task:
+            combo.configure(values=options_task)
+        if self.backtest_view_slot.get() not in options_all:
+            self.backtest_view_slot.set("全部")
+        if self.backtest_view_slot_task.get() not in options_task:
+            self.backtest_view_slot_task.set("不选")
+        self._schedule_bt_drawdown_preview()
+
+    def _on_backtest_view_change(self, _event=None) -> None:
+        self._apply_backtest_view()
+
+    def _on_backtest_view_change_task(self, _event=None) -> None:
+        if self.backtest_view_slot_task.get() and self.backtest_view_slot_task.get() != "不选":
+            self.backtest_view_slot.set(self.backtest_view_slot_task.get())
+        self._apply_backtest_view()
+
+    def _apply_backtest_view(self) -> None:
+        if self.backtest_view_slot.get().strip() == "全部":
+            self._update_backtest_metric_panel_aggregate()
+        elif self.backtest_task_results:
+            self._clear_backtest_metric_panel()
+        selected = self._selected_backtest_task_result()
+        if selected is not None and isinstance(selected.get("bundle"), BacktestChartBundle):
+            self.latest_chart_bundle = selected.get("bundle")
+            self.kline_status.set(f"{self.latest_chart_bundle.symbol} {self.latest_chart_bundle.period} 已切换到策略 {selected.get('strategy_id')}")
+            self.trade_detail_status.set(f"已切换到策略 {selected.get('strategy_id')} 的交易明细。")
+            self._refresh_trade_detail_table(self.latest_chart_bundle)
+            result = selected.get("result") or {}
+            self.sltp_chart_payloads = result.get("sltp_chart_payloads") if isinstance(result.get("sltp_chart_payloads"), dict) else {}
+            matrix_rows = result.get("sltp_matrix", [])
+            self.sltp_matrix_rows = [row for row in matrix_rows if isinstance(row, dict)]
+            self.selected_sltp_key = self._resolve_default_sltp_key(matrix_rows)
+            self._render_sltp_matrix(matrix_rows)
+            self._render_summary_rankings(matrix_rows, result.get("summary", []))
+        elif self.backtest_task_results:
+            latest = self.backtest_task_results[-1].get("bundle")
+            if isinstance(latest, BacktestChartBundle):
+                self.latest_chart_bundle = latest
+        self._schedule_bt_drawdown_preview()
+        self._schedule_kline_preview()
+
+    def _update_backtest_metric_panel_aggregate(self) -> None:
+        total_net_pnl = 0.0
+        total_trades = 0
+        for item in self.backtest_task_results:
+            result = item.get("result") or {}
+            best_row = next((row for row in (result.get("sltp_matrix") or []) if isinstance(row, dict) and bool(row.get("is_best"))), None)
+            if not isinstance(best_row, dict):
+                continue
+            total_net_pnl += float(best_row.get("net_pnl") or 0.0)
+            total_trades += int(best_row.get("trade_count") or 0)
+        self.metric_combo.set("总盈亏")
+        self.metric_net_pnl.set(f"{total_net_pnl:+,.2f}")
+        self.metric_return.set("-")
+        self.metric_win_rate.set("-")
+        self.metric_trades.set(str(total_trades) if total_trades else "-")
+        self.metric_max_drawdown.set("-")
+        self.metric_cdar.set("-")
+        self.metric_score.set("-")
+        self.metric_rank.set("-")
+        self.metric_custom_period.set(self._current_backtest_time_range_text())
+
+    def _selected_backtest_task_result(self) -> dict[str, object] | None:
+        choice = self.backtest_view_slot.get().strip()
+        if not choice or choice == "全部":
+            return None
+        for item in self.backtest_task_results:
+            if str(item.get("strategy_id")) == choice:
+                return item
+        return None
+
     def _build_live_log_card(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(1, weight=1)
@@ -1899,7 +2100,8 @@ class TradingDesktopApp(Tk):
         header = ttk.Frame(parent, style="Card.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Button(header, text="清空日志", command=self._clear_live_log).grid(row=0, column=1, sticky="e")
+        ttk.Button(header, text="打开日志", command=self._open_live_log_file).grid(row=0, column=1, sticky="e", padx=(0, 8))
+        ttk.Button(header, text="清空日志", command=self._clear_live_log).grid(row=0, column=2, sticky="e")
 
         log_shell = ttk.Frame(parent, style="Card.TFrame")
         log_shell.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
@@ -1956,7 +2158,12 @@ class TradingDesktopApp(Tk):
         header = ttk.Frame(parent, style="Card.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="回测K线图", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        title_bar = ttk.Frame(header, style="Card.TFrame")
+        title_bar.grid(row=0, column=0, sticky="w")
+        ttk.Label(title_bar, text="回测K线图", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        selector_bar = ttk.Frame(title_bar, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self._add_backtest_view_selector(selector_bar, label="交易明细")
         control_bar = ttk.Frame(header, style="Card.TFrame")
         control_bar.grid(row=0, column=1, sticky="e")
         ttk.Button(control_bar, text="放大", width=7, command=lambda: self._zoom_kline_preview(120, self._kline_preview_anchor_x())).grid(row=0, column=0, padx=(0, 6))
@@ -1983,6 +2190,9 @@ class TradingDesktopApp(Tk):
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="交易明细", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        self._add_backtest_view_selector(selector_bar, label="交易明细")
         ttk.Label(header, textvariable=self.trade_detail_status, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         columns = ("trade_no", "side", "quantity", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
@@ -3048,7 +3258,7 @@ class TradingDesktopApp(Tk):
         muted = "#87a0b3"
 
         canvas.create_rectangle(0, 0, width, height, fill=bg, outline="")
-        if bundle is None or bundle.signal_frame.empty or bundle.equity_df.empty or "equity" not in bundle.equity_df.columns:
+        if (not self.backtest_task_results) and (bundle is None or bundle.signal_frame.empty or bundle.equity_df.empty or "equity" not in bundle.equity_df.columns):
             canvas.create_text(
                 width / 2,
                 height / 2 - 8,
@@ -3065,8 +3275,28 @@ class TradingDesktopApp(Tk):
             )
             return
 
-        signal_frame = bundle.signal_frame.sort_index()
-        equity = bundle.equity_df.sort_index()["equity"].astype(float).reindex(signal_frame.index).ffill().bfill()
+        if self.backtest_task_results:
+            choice = self.backtest_view_slot.get().strip()
+            if choice == "全部":
+                equity = self._aggregate_backtest_equity()
+            else:
+                selected = self._selected_backtest_task_result()
+                equity = None
+                if selected and isinstance(selected.get("bundle"), BacktestChartBundle):
+                    selected_bundle = selected.get("bundle")
+                    signal_frame = selected_bundle.signal_frame.sort_index()
+                    equity = (
+                        selected_bundle.equity_df.sort_index()["equity"]
+                        .astype(float)
+                        .reindex(signal_frame.index)
+                        .ffill()
+                        .bfill()
+                    )
+            if equity is None:
+                equity = pd.Series(dtype=float)
+        else:
+            signal_frame = bundle.signal_frame.sort_index()
+            equity = bundle.equity_df.sort_index()["equity"].astype(float).reindex(signal_frame.index).ffill().bfill()
         if equity.empty:
             canvas.create_text(width / 2, height / 2, text="\u6ca1\u6709\u53ef\u663e\u793a\u7684\u56de\u64a4\u6570\u636e\u3002", fill=text, font=("Microsoft YaHei UI", 12, "bold"))
             return
@@ -4098,6 +4328,113 @@ class TradingDesktopApp(Tk):
             raise ValueError("自定义时间段无效：开始时间不能晚于结束时间。")
         return start_text, end_text
 
+    def _collect_backtest_task(self) -> dict[str, object]:
+        selected_period = self._normalize_backtest_period(self.bt_periods.get())
+        requested_bars = self._normalize_history_bar_count(self.bt_bars.get(), period=selected_period, default=2000)
+        start_text, end_text = self._resolve_backtest_time_range()
+        manual_csv = None if self._bt_csv_auto_managed else (self.bt_csv.get().strip() or None)
+        auto_fixed_size = self._resolve_backtest_auto_fixed_size(
+            period=selected_period,
+            requested_bars=requested_bars,
+            csv_path=(self.bt_csv.get().strip() or None),
+            start=start_text,
+            end=end_text,
+        )
+        return {
+            "strategy": self.bt_strategy.get().strip() or "策略",
+            "account": "回测",
+            "symbol": self.bt_symbol.get().strip() or "-",
+            "signal_side": self.bt_signal_side.get().strip() or "-",
+            "ema": f"{self.bt_fast.get() or '-'} / {self.bt_slow.get() or '-'}",
+            "leverage": "-",
+            "stop_atr": self.bt_stop_atr.get() or "-",
+            "take_atr": self.bt_take_atr.get() or "-",
+            "period": selected_period,
+            "bars": requested_bars,
+            "start": start_text,
+            "end": end_text,
+            "csv": manual_csv,
+            "initial_cash": float(self.bt_initial_cash.get() or "10000"),
+            "risk": float(self.bt_risk.get() or "100"),
+            "fee_bps": float(self.bt_fee.get() or "2.8"),
+            "slippage_bps": float(self.bt_slippage.get() or "2"),
+            "fast_ema": int(self.bt_fast.get() or "21"),
+            "slow_ema": int(self.bt_slow.get() or "55"),
+            "signal_side_norm": self._normalize_signal_side(self.bt_signal_side.get()),
+            "stop_loss": float(self.bt_stop_atr.get() or "1"),
+            "take_profit": float(self.bt_take_atr.get() or "2"),
+            "fixed_qty_value": auto_fixed_size,
+        }
+
+    def _add_backtest_sub_strategy(self) -> None:
+        if len(self.backtest_tasks) >= 10:
+            messagebox.showwarning("已达上限", "回测最多可同时添加 10 个策略。")
+            return
+        task = self._collect_backtest_task()
+        task["strategy_id"] = str(len(self.backtest_tasks) + 1)
+        self.backtest_tasks.append(task)
+        self._refresh_backtest_strategy_table()
+        self._refresh_backtest_view_options()
+
+    def _stop_selected_backtest_strategy(self) -> None:
+        if self.backtest_strategy_tree is None:
+            return
+        selection = self.backtest_strategy_tree.selection()
+        if not selection:
+            messagebox.showinfo("提示", "请先选择要停止的策略。")
+            return
+        item_id = selection[0]
+        values = self.backtest_strategy_tree.item(item_id, "values")
+        strategy_id = str(values[0]) if values else ""
+        if not strategy_id:
+            return
+        self.backtest_tasks = [task for task in self.backtest_tasks if str(task.get("strategy_id")) != strategy_id]
+        self.backtest_task_results = [item for item in self.backtest_task_results if str(item.get("strategy_id")) != strategy_id]
+        for index, task in enumerate(self.backtest_tasks, start=1):
+            task["strategy_id"] = str(index)
+        for index, item in enumerate(self.backtest_task_results, start=1):
+            item["strategy_id"] = str(index)
+        self._refresh_backtest_strategy_table()
+        self._refresh_backtest_view_options()
+
+    def _refresh_backtest_strategy_table(self) -> None:
+        if self.backtest_strategy_tree is None:
+            return
+        for item in self.backtest_strategy_tree.get_children():
+            self.backtest_strategy_tree.delete(item)
+        for task in self.backtest_tasks:
+            self.backtest_strategy_tree.insert(
+                "",
+                "end",
+                values=(
+                    task.get("strategy_id", "-"),
+                    task.get("account", "-"),
+                    task.get("symbol", "-"),
+                    task.get("signal_side", "-"),
+                    task.get("ema", "-"),
+                    task.get("leverage", "-"),
+                    task.get("stop_atr", "-"),
+                    task.get("take_atr", "-"),
+                ),
+            )
+
+    def _aggregate_backtest_equity(self) -> pd.Series:
+        series_list: list[pd.Series] = []
+        for item in self.backtest_task_results:
+            bundle = item.get("bundle")
+            if not isinstance(bundle, BacktestChartBundle) or bundle.signal_frame.empty or bundle.equity_df.empty:
+                continue
+            if "equity" not in bundle.equity_df.columns:
+                continue
+            signal_frame = bundle.signal_frame.sort_index()
+            equity = bundle.equity_df.sort_index()["equity"].astype(float).reindex(signal_frame.index).ffill().bfill()
+            if not equity.empty:
+                series_list.append(equity)
+        if not series_list:
+            return pd.Series(dtype=float)
+        combined = pd.concat(series_list, axis=1).ffill().bfill()
+        return combined.sum(axis=1)
+
     def _start_backtest(self) -> None:
         selected_period = self._normalize_backtest_period(self.bt_periods.get())
         self._apply_history_bar_limit(self.bt_bars, period=selected_period, default=2000, label="回测历史K线")
@@ -4113,49 +4450,50 @@ class TradingDesktopApp(Tk):
         self._reset_kline_preview_view()
         self._schedule_bt_drawdown_preview()
         self._schedule_kline_preview()
+        self.backtest_task_results.clear()
+        self.backtest_view_slot.set("全部")
+        self._refresh_backtest_view_options()
         self._log("开始执行回测，正在整理参数并准备载入数据。")
-        worker = threading.Thread(target=self._run_backtest_worker, daemon=True)
+        tasks = list(self.backtest_tasks) if self.backtest_tasks else [self._collect_backtest_task() | {"strategy_id": "1"}]
+        worker = threading.Thread(target=self._run_backtest_worker, args=(tasks,), daemon=True)
         worker.start()
 
-    def _run_backtest_worker(self) -> None:
+    def _run_backtest_worker(self, tasks: list[dict[str, object]]) -> None:
         try:
-            selected_period = self._normalize_backtest_period(self.bt_periods.get())
-            requested_bars = self._normalize_history_bar_count(self.bt_bars.get(), period=selected_period, default=2000)
-            start_text, end_text = self._resolve_backtest_time_range()
-            manual_csv = None if self._bt_csv_auto_managed else (self.bt_csv.get().strip() or None)
-            auto_fixed_size = self._resolve_backtest_auto_fixed_size(
-                period=selected_period,
-                requested_bars=requested_bars,
-                csv_path=(self.bt_csv.get().strip() or None),
-                start=start_text,
-                end=end_text,
-            )
-            request = BacktestRequest(
-                symbol=self._normalize_swap_symbol(self.bt_symbol.get()),
-                csv=manual_csv,
-                history_bars=requested_bars,
-                history_bars_1h=self._resolve_backtest_fetch_bars(selected_period, requested_bars),
-                source_bar=self._resolve_backtest_source_bar(selected_period),
-                start=start_text,
-                end=end_text,
-                initial_cash=float(self.bt_initial_cash.get() or "10000"),
-                risk_amount=float(self.bt_risk.get() or "100"),
-                fee_bps=float(self.bt_fee.get() or "2.8"),
-                slippage_bps=float(self.bt_slippage.get() or "2"),
-                fast_ema=int(self.bt_fast.get() or "21"),
-                slow_ema=int(self.bt_slow.get() or "55"),
-                hold_bars=0,
-                max_allocation_pct=float(self.bt_max_alloc.get() or "0.95"),
-                signal_side=self._normalize_signal_side(self.bt_signal_side.get()),
-                stop_loss_atr_multiplier=float(self.bt_stop_atr.get() or "1"),
-                take_profit_r_multiple=float(self.bt_take_atr.get() or "2"),
-                fixed_position_qty=auto_fixed_size,
-                periods=[selected_period],
-                output_dir=str(Path("desktop_reports")),
-            )
-            self.event_queue.put(("backtest_trace", self._build_backtest_request_log_text(request)))
-            result = run_backtest(request)
-            self.event_queue.put(("backtest_ok", result))
+            final_result = None
+            for task in tasks:
+                selected_period = str(task.get("period") or self._normalize_backtest_period(self.bt_periods.get()))
+                requested_bars = int(task.get("bars") or 2000)
+                request = BacktestRequest(
+                    symbol=self._normalize_swap_symbol(str(task.get("symbol") or self.bt_symbol.get())),
+                    csv=task.get("csv"),
+                    history_bars=requested_bars,
+                    history_bars_1h=self._resolve_backtest_fetch_bars(selected_period, requested_bars),
+                    source_bar=self._resolve_backtest_source_bar(selected_period),
+                    start=task.get("start"),
+                    end=task.get("end"),
+                    initial_cash=float(task.get("initial_cash") or 10000),
+                    risk_amount=float(task.get("risk") or 100),
+                    fee_bps=float(task.get("fee_bps") or 2.8),
+                    slippage_bps=float(task.get("slippage_bps") or 2),
+                    fast_ema=int(task.get("fast_ema") or 21),
+                    slow_ema=int(task.get("slow_ema") or 55),
+                    hold_bars=0,
+                    max_allocation_pct=float(self.bt_max_alloc.get() or "0.95"),
+                    signal_side=str(task.get("signal_side_norm") or self._normalize_signal_side(self.bt_signal_side.get())),
+                    stop_loss_atr_multiplier=float(task.get("stop_loss") or 1),
+                    take_profit_r_multiple=float(task.get("take_profit") or 2),
+                    fixed_position_qty=task.get("fixed_qty_value"),
+                    periods=[selected_period],
+                    output_dir=str(Path("desktop_reports")),
+                )
+                self.event_queue.put(("backtest_trace", self._build_backtest_request_log_text(request)))
+                result = run_backtest(request)
+                final_result = result
+                self.event_queue.put(("backtest_task_result", {"task": task, "result": result}))
+            if final_result is None:
+                raise RuntimeError("回测失败：没有可用的回测任务。")
+            self.event_queue.put(("backtest_ok", final_result))
         except Exception as exc:
             self.event_queue.put(("error", f"\u56de\u6d4b\u5931\u8d25\uff1a{exc}"))
 
@@ -4573,9 +4911,47 @@ class TradingDesktopApp(Tk):
 
     def _clear_log(self) -> None:
         self._replace_log_text(self.log_text, "\u65e5\u5fd7\u5df2\u6e05\u7a7a\u3002\n")
+        self._truncate_log_file(self.backtest_log_path)
 
     def _clear_live_log(self) -> None:
         self._replace_log_text(self.live_log_text, "实盘日志已清空。\n")
+        self._truncate_log_file(self.live_log_path)
+
+    def _ensure_log_paths(self) -> None:
+        for path in (self.backtest_log_path, self.live_log_path):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if not path.exists():
+                    path.write_text("", encoding="utf-8")
+            except Exception:
+                continue
+
+    def _append_log_file(self, path: Path, message: str) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(f"{self._timestamped_message(message)}\n")
+        except Exception:
+            return
+
+    def _truncate_log_file(self, path: Path) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        except Exception:
+            return
+
+    def _open_backtest_log_file(self) -> None:
+        try:
+            os.startfile(str(self.backtest_log_path))
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"无法打开回测日志文件：{exc}")
+
+    def _open_live_log_file(self) -> None:
+        try:
+            os.startfile(str(self.live_log_path))
+        except Exception as exc:
+            messagebox.showerror("打开失败", f"无法打开实盘日志文件：{exc}")
 
     def _drain_queue(self) -> None:
         while True:
@@ -4586,6 +4962,9 @@ class TradingDesktopApp(Tk):
 
             if event == "backtest_ok":
                 self._handle_backtest_result(payload)
+            elif event == "backtest_task_result":
+                if isinstance(payload, dict):
+                    self._handle_backtest_task_result(payload)
             elif event == "backtest_trace":
                 self._log(str(payload))
             elif event == "live_ok":
@@ -4712,6 +5091,21 @@ class TradingDesktopApp(Tk):
             self._log("\u5df2\u751f\u6210 SL / TP \u53c2\u6570\u77e9\u9635\u3002")
         if self.latest_chart_bundle is not None:
             self._log("\u5f53\u524d\u5df2\u652f\u6301\u5728\u8f6f\u4ef6\u5185\u76f4\u63a5\u6253\u5f00\u5408\u5e76\u540e\u7684\u56de\u6d4b\u603b\u56fe\u3002")
+
+    def _handle_backtest_task_result(self, payload: dict) -> None:
+        task = payload.get("task") or {}
+        result = payload.get("result") or {}
+        bundle = self._build_chart_bundle(result)
+        strategy_id = str(task.get("strategy_id") or "")
+        self.backtest_task_results.append(
+            {
+                "strategy_id": strategy_id,
+                "task": task,
+                "result": result,
+                "bundle": bundle,
+            }
+        )
+        self._refresh_backtest_view_options()
 
     def _handle_live_result(self, result: dict, *, strategy_id: str | None = None) -> None:
         if strategy_id and strategy_id not in self.live_strategy_workers:
@@ -4905,9 +5299,11 @@ class TradingDesktopApp(Tk):
 
     def _log(self, message: str) -> None:
         self._append_log_text(self.log_text, message)
+        self._append_log_file(self.backtest_log_path, message)
 
     def _live_log(self, message: str) -> None:
         self._append_log_text(self.live_log_text, message)
+        self._append_log_file(self.live_log_path, message)
 
     @staticmethod
     def _optional_float(value: str) -> float | None:
