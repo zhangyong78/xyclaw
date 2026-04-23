@@ -51,6 +51,26 @@ class OKXPublicClient:
             raise RuntimeError(f"OKX error: {payload}")
         return payload.get("data", [])
 
+    def candles(
+        self,
+        inst_id: str,
+        bar: str = "1H",
+        limit: int = 100,
+        before: str | None = None,
+    ) -> list[list[str]]:
+        params = {
+            "instId": inst_id,
+            "bar": _normalize_okx_bar(bar),
+            "limit": str(limit),
+        }
+        if before:
+            params["before"] = before
+
+        payload = self._get_json("/api/v5/market/candles", params=params)
+        if payload.get("code") != "0":
+            raise RuntimeError(f"OKX error: {payload}")
+        return payload.get("data", [])
+
     def get_instrument(self, inst_id: str, inst_type: str = "SPOT") -> dict:
         params = {"instType": inst_type, "instId": inst_id}
         payload = self._get_json("/api/v5/public/instruments", params=params)
@@ -60,6 +80,25 @@ class OKXPublicClient:
         if not data:
             raise RuntimeError(f"Instrument not found: {inst_id}")
         return data[0]
+
+    def get_ticker_last(self, inst_id: str) -> float:
+        params = {"instId": inst_id}
+        payload = self._get_json("/api/v5/market/ticker", params=params)
+        if payload.get("code") != "0":
+            raise RuntimeError(f"OKX error: {payload}")
+        data = payload.get("data", [])
+        if not data:
+            raise RuntimeError(f"Ticker not found: {inst_id}")
+        row = data[0] if isinstance(data[0], dict) else {}
+        for key in ("last", "lastPx", "markPx", "idxPx"):
+            raw = row.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                continue
+        raise RuntimeError(f"Ticker price not found: {inst_id}")
 
     def _get_json(self, path: str, *, params: dict | None = None) -> dict:
         last_error: Exception | None = None
@@ -132,8 +171,19 @@ class OKXPublicClient:
             df = df[df.index <= pd.to_datetime(end_ts, unit="ms", utc=True)]
         return df.sort_index().tail(bars)
 
+    def download_recent(
+        self,
+        inst_id: str,
+        bar: str,
+        limit: int = 2,
+        *,
+        include_unconfirmed: bool = True,
+    ) -> pd.DataFrame:
+        rows = self.candles(inst_id=inst_id, bar=bar, limit=max(1, int(limit)))
+        return _rows_to_frame(rows, include_unconfirmed=include_unconfirmed)
 
-def _rows_to_frame(rows: list[list[str]]) -> pd.DataFrame:
+
+def _rows_to_frame(rows: list[list[str]], *, include_unconfirmed: bool = False) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume", "turnover"])
 
@@ -155,8 +205,9 @@ def _rows_to_frame(rows: list[list[str]]) -> pd.DataFrame:
         )
 
     frame = pd.DataFrame(normalized).drop_duplicates(subset=["ts"]).set_index("ts").sort_index()
-    if "confirm" in frame.columns:
+    if "confirm" in frame.columns and not include_unconfirmed:
         frame = frame[frame["confirm"] == "1"]
+    if "confirm" in frame.columns:
         frame = frame.drop(columns=["confirm"])
     return frame
 

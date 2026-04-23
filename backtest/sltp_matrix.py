@@ -36,8 +36,11 @@ def run_sltp_matrix(
         empty = pd.DataFrame()
         return (empty, {}) if include_chart_payloads else empty
 
-    sl_values = sl_multipliers or DEFAULT_SL_MULTIPLIERS
-    tp_values = tp_multipliers or DEFAULT_TP_MULTIPLIERS
+    trend_mode = str(base_config.entry_mode or "range").strip().lower() == "trend"
+    sl_values = sl_multipliers or (
+        [float(base_config.stop_loss_atr_multiplier or 1.0)] if trend_mode else DEFAULT_SL_MULTIPLIERS
+    )
+    tp_values = tp_multipliers or ([0.0] if trend_mode else DEFAULT_TP_MULTIPLIERS)
     rows: list[dict] = []
     chart_payloads: dict[str, dict[str, Any]] = {}
 
@@ -54,7 +57,12 @@ def run_sltp_matrix(
             win_rate = float(summary.get("win_rate", 0.0))
             trade_count = int(summary.get("trade_count", 0))
             matrix_key = build_matrix_key(float(sl_mult), float(tp_mult))
-            combo_label = f"SL x{format_multiplier(float(sl_mult))} / TP = SL x{format_multiplier(float(tp_mult))}"
+            combo_label = (
+                f"SL x{format_multiplier(float(sl_mult))} / 趋势移动止损"
+                if trend_mode
+                else f"SL x{format_multiplier(float(sl_mult))} / TP = SL x{format_multiplier(float(tp_mult))}"
+            )
+            tp_label = "趋势移动止损" if trend_mode else f"TP = SL x{format_multiplier(float(tp_mult))}"
             rows.append(
                 {
                     **summary,
@@ -63,7 +71,7 @@ def run_sltp_matrix(
                     "sl_multiplier": float(sl_mult),
                     "tp_multiplier": float(tp_mult),
                     "sl_label": f"SL x{format_multiplier(float(sl_mult))}",
-                    "tp_label": f"TP = SL x{format_multiplier(float(tp_mult))}",
+                    "tp_label": tp_label,
                     "net_pnl": net_pnl,
                     "win_rate": win_rate,
                     "trade_count": trade_count,
@@ -78,7 +86,7 @@ def run_sltp_matrix(
                     "sl_multiplier": float(sl_mult),
                     "tp_multiplier": float(tp_mult),
                     "sl_label": f"SL x{format_multiplier(float(sl_mult))}",
-                    "tp_label": f"TP = SL x{format_multiplier(float(tp_mult))}",
+                    "tp_label": tp_label,
                     "display_label": combo_label,
                     "summary": dict(summary),
                     "signal_frame": result["signal_frame"].copy(),
@@ -122,7 +130,9 @@ def build_sltp_matrix_section_html(
 
     head_cells = ['<div class="sltp-corner">SL \\/ TP</div>']
     for tp in tp_values:
-        head_cells.append(f'<div class="sltp-head">{html.escape(f"TP = SL x{format_multiplier(tp)}")}</div>')
+        sample_row = matrix_map.get((sl_values[0], tp), {}) if sl_values else {}
+        header_text = str(sample_row.get("tp_label") or f"TP = SL x{format_multiplier(tp)}")
+        head_cells.append(f'<div class="sltp-head">{html.escape(header_text)}</div>')
 
     body_rows: list[str] = []
     for sl in sl_values:

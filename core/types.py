@@ -17,6 +17,7 @@ class BacktestConfig:
     hold_bars: int = 0
     max_allocation_pct: float = 0.95
     signal_side: str = "long_only"
+    entry_mode: str = "range"
     stop_on_slow_ema: bool = True
     exit_on_dead_cross: bool = True
     stop_loss_atr_multiplier: float | None = None
@@ -44,6 +45,7 @@ class Position:
     qty: float
     entry_fee: float
     stop_price: float
+    initial_stop_price: float
     take_profit_price: float | None = None
 
 

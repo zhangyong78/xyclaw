@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 import time
 
 from live.config import OKXCredentials
@@ -32,7 +33,7 @@ class OrderRouter:
         side: str,
         size: str,
         leverage: int,
-        margin_mode: str = "cross",
+        margin_mode: str = "isolated",
         reduce_only: bool = False,
     ) -> OrderExecutionResult:
         payload = {
@@ -60,7 +61,7 @@ class OrderRouter:
         size: str,
         price: str,
         leverage: int,
-        margin_mode: str = "cross",
+        margin_mode: str = "isolated",
         reduce_only: bool = False,
     ) -> OrderExecutionResult:
         payload = {
@@ -166,8 +167,8 @@ class OrderRouter:
             self.trade_client.set_leverage(inst_id=symbol, leverage=leverage, mgn_mode=margin_mode)
         except Exception as exc:
             if self._can_skip_swap_leverage_error(exc, margin_mode=margin_mode):
-                return "当前账户为 PM 账户，OKX 不支持在 cross 永续上单独调整杠杆；程序已跳过设杠杆，继续按账户现有设置发单。"
-            raise
+                return "当前账户为 PM 账户，OKX 不支持在全仓永续上单独调整杠杆；程序已跳过设杠杆，继续按账户现有设置发单。"
+            raise self._rewrite_swap_leverage_error(exc, symbol=symbol, leverage=leverage, margin_mode=margin_mode) from exc
         return None
 
     @staticmethod
@@ -177,6 +178,44 @@ class OrderRouter:
         if str(margin_mode).strip().lower() != "cross":
             return False
         return "51039" in lowered or ("pm account" in lowered and "leverage cannot be adjusted" in lowered)
+
+    @staticmethod
+    def _rewrite_swap_leverage_error(exc: Exception, *, symbol: str, leverage: int, margin_mode: str) -> RuntimeError:
+        message = str(exc).strip()
+        lowered = message.lower()
+        code = OrderRouter._extract_okx_code(message)
+        normalized_mode = str(margin_mode).strip().lower()
+        if normalized_mode == "cross":
+            mode_text = "全仓"
+        elif normalized_mode == "isolated":
+            mode_text = "逐仓"
+        else:
+            mode_text = str(margin_mode).strip() or "当前"
+
+        if code == "59102" or "leverage exceeds the maximum limit" in lowered:
+            return RuntimeError(
+                f"{symbol} {mode_text}杠杆设置为 {int(leverage)}x 失败："
+                f"OKX 提示当前账户该合约允许的最大杠杆低于 {int(leverage)}x。"
+                "请把“永续杠杆倍数”调低后再试，"
+                "或先到 OKX App / 网页端确认该合约在当前账户模式下允许的最大杠杆。"
+                f"原始错误：{message}"
+            )
+
+        return RuntimeError(
+            f"{symbol} {mode_text}杠杆设置失败，当前请求为 {int(leverage)}x。原始错误：{message}"
+        )
+
+    @staticmethod
+    def _extract_okx_code(message: str) -> str:
+        patterns = [
+            r"'code'\s*:\s*'([^']+)'",
+            r'"code"\s*:\s*"([^"]+)"',
+        ]
+        for pattern in patterns:
+            matched = re.search(pattern, message)
+            if matched:
+                return str(matched.group(1) or "").strip()
+        return ""
 
     def _poll_order_via_rest(self, *, inst_id: str, cl_ord_id: str, attempts: int) -> dict:
         last_order: dict = {}

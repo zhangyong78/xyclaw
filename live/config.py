@@ -22,6 +22,7 @@ class LiveRunConfig:
     period: str = "1H"
     account_tag: str = "default"
     signal_side: str = "long_only"
+    entry_mode: str = "range"
     leverage: int = 1
     bars_to_fetch: int = 240
     risk_amount: float = 100.0

@@ -42,6 +42,14 @@ class CycleReport:
     execution: OrderExecutionResult | None = None
 
 
+@dataclass(slots=True)
+class PendingEntrySignal:
+    action: str
+    trade_side: str
+    reason: str
+    signal_ts: str
+
+
 class LiveTrader:
     def __init__(
         self,
@@ -75,71 +83,84 @@ class LiveTrader:
             max(int(self.config.atr_period), 1),
         )
         snapshot = latest_signal_snapshot(signal_frame)
-        contract_info = self._extract_contract_info(instrument, latest_price=snapshot.close)
+        current_ts = self._utc_now_iso()
+        live_price = self._get_live_reference_price(self.config.symbol, fallback=snapshot.close)
+        contract_info = self._extract_contract_info(instrument, latest_price=live_price)
         available_margin, total_equity = self._get_margin_snapshot(margin_ccy=contract_info["margin_ccy"])
         position = self._get_position_snapshot(contract_info=contract_info)
 
         state = self.state_store.load()
         live_trades = self.trade_store.load()
+        has_processed_signals = bool(state.last_buy_signal_ts or state.last_sell_signal_ts)
         state, today_pnl, total_pnl = self._refresh_equity_baselines(state, total_assets=total_equity)
+        if position["side"] is None and (state.entry_signal_ts is not None or state.entry_side is not None):
+            state.entry_signal_ts = None
+            state.entry_side = None
+            self.state_store.save(state)
+        if position["side"] is None and self._reconcile_flat_position_trades(
+            live_trades,
+            signal_frame=signal_frame,
+            fallback_price=live_price,
+            signal_ts=current_ts,
+        ):
+            self.trade_store.save(live_trades)
         if self._hydrate_open_trade(
             live_trades,
             signal_frame=signal_frame,
             state=state,
             position_side=position["side"],
             position_base_size=position["base_qty"],
-            fallback_price=snapshot.close,
+            fallback_price=float(position.get("avg_price") or live_price),
         ):
             self.trade_store.save(live_trades)
 
         if position["side"] is None:
-            if self._allows_long() and snapshot.cross_up and state.last_buy_signal_ts != snapshot.ts.isoformat():
-                return self._handle_entry(
-                    trade_side="long",
-                    action="buy",
-                    reason="golden_cross",
-                    signal_frame=signal_frame,
-                    snapshot=snapshot,
-                    state=state,
-                    live_trades=live_trades,
-                    available_margin=available_margin,
+            pending_entry = self._select_pending_entry_signal(
+                signal_frame,
+                state=state,
+                snapshot=snapshot,
+                allow_resume_catchup=has_processed_signals,
+                live_trades=live_trades,
+            )
+            if pending_entry is not None:
+                return self._with_live_preview_frame(
+                    self._handle_entry(
+                        trade_side=pending_entry.trade_side,
+                        action=pending_entry.action,
+                        reason=pending_entry.reason,
+                        signal_frame=signal_frame,
+                        snapshot=snapshot,
+                        state=state,
+                        live_trades=live_trades,
+                        available_margin=available_margin,
+                        total_assets=total_equity,
+                        today_pnl=today_pnl,
+                        total_pnl=total_pnl,
+                        contract_info=contract_info,
+                        signal_ts=pending_entry.signal_ts,
+                    ),
+                    signal_symbol=signal_symbol,
+                )
+            return self._with_live_preview_frame(
+                self._build_report(
+                    action="hold",
+                    reason="no_entry_signal",
+                    signal_ts=snapshot.ts.isoformat(),
+                    in_position=False,
+                    base_balance=0.0,
+                    quote_balance=available_margin,
+                    suggested_size=None,
+                    held_bars=0,
+                    latest_close=live_price,
+                    ema_fast=snapshot.ema_fast,
+                    ema_slow=snapshot.ema_slow,
                     total_assets=total_equity,
                     today_pnl=today_pnl,
                     total_pnl=total_pnl,
-                    contract_info=contract_info,
-                )
-            if self._allows_short() and snapshot.cross_down and state.last_sell_signal_ts != snapshot.ts.isoformat():
-                return self._handle_entry(
-                    trade_side="short",
-                    action="sell",
-                    reason="dead_cross_short",
                     signal_frame=signal_frame,
-                    snapshot=snapshot,
-                    state=state,
-                    live_trades=live_trades,
-                    available_margin=available_margin,
-                    total_assets=total_equity,
-                    today_pnl=today_pnl,
-                    total_pnl=total_pnl,
-                    contract_info=contract_info,
-                )
-            return self._build_report(
-                action="hold",
-                reason="no_entry_signal",
-                signal_ts=snapshot.ts.isoformat(),
-                in_position=False,
-                base_balance=0.0,
-                quote_balance=available_margin,
-                suggested_size=None,
-                held_bars=0,
-                latest_close=snapshot.close,
-                ema_fast=snapshot.ema_fast,
-                ema_slow=snapshot.ema_slow,
-                total_assets=total_equity,
-                today_pnl=today_pnl,
-                total_pnl=total_pnl,
-                signal_frame=signal_frame,
-                trades_df=self._build_trades_frame(live_trades, latest_close=snapshot.close),
+                    trades_df=self._build_trades_frame(live_trades, latest_close=live_price),
+                ),
+                signal_symbol=signal_symbol,
             )
 
         open_trade = self._find_open_trade(live_trades)
@@ -152,57 +173,66 @@ class LiveTrader:
         )
 
         if position["side"] == "long" and exit_eval.should_exit and state.last_sell_signal_ts != snapshot.ts.isoformat():
-            return self._handle_exit(
-                order_side="sell",
-                position_side="long",
-                exit_reason=exit_eval.reason or "exit_signal",
-                signal_frame=signal_frame,
-                snapshot=snapshot,
-                state=state,
-                live_trades=live_trades,
-                position=position,
-                total_assets=total_equity,
-                today_pnl=today_pnl,
-                total_pnl=total_pnl,
-                held_bars=exit_eval.held_bars,
-                contract_info=contract_info,
-                quote_balance=available_margin,
+            return self._with_live_preview_frame(
+                self._handle_exit(
+                    order_side="sell",
+                    position_side="long",
+                    exit_reason=exit_eval.reason or "exit_signal",
+                    signal_frame=signal_frame,
+                    snapshot=snapshot,
+                    state=state,
+                    live_trades=live_trades,
+                    position=position,
+                    total_assets=total_equity,
+                    today_pnl=today_pnl,
+                    total_pnl=total_pnl,
+                    held_bars=exit_eval.held_bars,
+                    contract_info=contract_info,
+                    quote_balance=available_margin,
+                ),
+                signal_symbol=signal_symbol,
             )
         if position["side"] == "short" and exit_eval.should_exit and state.last_buy_signal_ts != snapshot.ts.isoformat():
-            return self._handle_exit(
-                order_side="buy",
-                position_side="short",
-                exit_reason=exit_eval.reason or "exit_signal",
-                signal_frame=signal_frame,
-                snapshot=snapshot,
-                state=state,
-                live_trades=live_trades,
-                position=position,
+            return self._with_live_preview_frame(
+                self._handle_exit(
+                    order_side="buy",
+                    position_side="short",
+                    exit_reason=exit_eval.reason or "exit_signal",
+                    signal_frame=signal_frame,
+                    snapshot=snapshot,
+                    state=state,
+                    live_trades=live_trades,
+                    position=position,
+                    total_assets=total_equity,
+                    today_pnl=today_pnl,
+                    total_pnl=total_pnl,
+                    held_bars=exit_eval.held_bars,
+                    contract_info=contract_info,
+                    quote_balance=available_margin,
+                ),
+                signal_symbol=signal_symbol,
+            )
+
+        return self._with_live_preview_frame(
+            self._build_report(
+                action="hold",
+                reason="position_open_no_exit",
+                signal_ts=snapshot.ts.isoformat(),
+                in_position=True,
+                base_balance=position["signed_base_qty"],
+                quote_balance=available_margin,
+                suggested_size=None,
+                held_bars=exit_eval.held_bars,
+                latest_close=live_price,
+                ema_fast=snapshot.ema_fast,
+                ema_slow=snapshot.ema_slow,
                 total_assets=total_equity,
                 today_pnl=today_pnl,
                 total_pnl=total_pnl,
-                held_bars=exit_eval.held_bars,
-                contract_info=contract_info,
-                quote_balance=available_margin,
-            )
-
-        return self._build_report(
-            action="hold",
-            reason="position_open_no_exit",
-            signal_ts=snapshot.ts.isoformat(),
-            in_position=True,
-            base_balance=position["signed_base_qty"],
-            quote_balance=available_margin,
-            suggested_size=None,
-            held_bars=exit_eval.held_bars,
-            latest_close=snapshot.close,
-            ema_fast=snapshot.ema_fast,
-            ema_slow=snapshot.ema_slow,
-            total_assets=total_equity,
-            today_pnl=today_pnl,
-            total_pnl=total_pnl,
-            signal_frame=signal_frame,
-            trades_df=self._build_trades_frame(live_trades, latest_close=snapshot.close),
+                signal_frame=signal_frame,
+                trades_df=self._build_trades_frame(live_trades, latest_close=live_price),
+            ),
+            signal_symbol=signal_symbol,
         )
 
     def _handle_entry(
@@ -220,16 +250,21 @@ class LiveTrader:
         today_pnl: float,
         total_pnl: float,
         contract_info: dict[str, float | str],
+        signal_ts: str | None = None,
     ) -> CycleReport:
+        effective_signal_ts = str(signal_ts or snapshot.ts.isoformat())
+        execution_ts = self._utc_now_iso()
+        live_price = self._get_live_reference_price(self.config.symbol, fallback=snapshot.close)
+        entry_reference_price = float(live_price if live_price > 0 else snapshot.close)
         stop_price = self._resolve_entry_stop_price(
             signal_frame,
-            entry_price=snapshot.close,
+            entry_price=entry_reference_price,
             fallback_stop=snapshot.ema_slow,
             trade_side=trade_side,
         )
         risk_cash = max(float(available_margin), 0.0) * max(float(self.config.leverage), 1.0)
         desired_base_qty = calculate_position_size(
-            entry_price=snapshot.close,
+            entry_price=entry_reference_price,
             stop_price=stop_price,
             risk_amount=self.config.risk_amount,
             available_cash=risk_cash,
@@ -242,49 +277,52 @@ class LiveTrader:
         execution = self._execute_order_if_needed(order_side=action, size=size, reduce_only=False)
 
         if execution is not None and execution.status not in {"dry_run"}:
-            self.state_store.save(
-                LiveState(
-                    last_buy_signal_ts=snapshot.ts.isoformat() if action == "buy" else state.last_buy_signal_ts,
-                    last_sell_signal_ts=snapshot.ts.isoformat() if action == "sell" else state.last_sell_signal_ts,
-                    entry_signal_ts=snapshot.ts.isoformat(),
-                    entry_side=trade_side,
-                    last_order_cl_ord_id=execution.cl_ord_id,
-                    strategy_started_at=state.strategy_started_at,
-                    strategy_start_equity=state.strategy_start_equity,
-                    day_anchor=state.day_anchor,
-                    day_start_equity=state.day_start_equity,
+            if not self._execution_is_rejected(execution):
+                self.state_store.save(
+                    LiveState(
+                        last_buy_signal_ts=effective_signal_ts if action == "buy" else state.last_buy_signal_ts,
+                        last_sell_signal_ts=effective_signal_ts if action == "sell" else state.last_sell_signal_ts,
+                        entry_signal_ts=effective_signal_ts,
+                        entry_side=trade_side,
+                        last_order_cl_ord_id=execution.cl_ord_id,
+                        strategy_started_at=state.strategy_started_at,
+                        strategy_start_equity=state.strategy_start_equity,
+                        day_anchor=state.day_anchor,
+                        day_start_equity=state.day_start_equity,
+                    )
                 )
-            )
-            self._record_open_trade(
-                live_trades,
-                trade_side=trade_side,
-                signal_frame=signal_frame,
-                signal_ts=snapshot.ts.isoformat(),
-                fallback_price=snapshot.close,
-                fallback_contract_size=size,
-                fallback_base_size=base_size,
-                contract_info=contract_info,
-                execution=execution,
-            )
-            self.trade_store.save(live_trades)
+            if self._execution_has_fill(execution):
+                self._record_open_trade(
+                    live_trades,
+                    trade_side=trade_side,
+                    signal_frame=signal_frame,
+                    signal_ts=effective_signal_ts,
+                    fallback_ts=execution_ts,
+                    fallback_price=live_price,
+                    fallback_contract_size=size,
+                    fallback_base_size=base_size,
+                    contract_info=contract_info,
+                    execution=execution,
+                )
+                self.trade_store.save(live_trades)
 
         return self._build_report(
             action=action if size else "skip",
-            reason=reason if size else "size_below_minimum",
-            signal_ts=snapshot.ts.isoformat(),
+            reason=(self._resolve_execution_reason(execution, default=reason) if size else "size_below_minimum"),
+            signal_ts=effective_signal_ts,
             in_position=False,
             base_balance=0.0,
             quote_balance=available_margin,
             suggested_size=size,
             held_bars=0,
-            latest_close=snapshot.close,
+            latest_close=live_price,
             ema_fast=snapshot.ema_fast,
             ema_slow=snapshot.ema_slow,
             total_assets=total_assets,
             today_pnl=today_pnl,
             total_pnl=total_pnl,
             signal_frame=signal_frame,
-            trades_df=self._build_trades_frame(live_trades, latest_close=snapshot.close),
+            trades_df=self._build_trades_frame(live_trades, latest_close=live_price),
             execution=execution,
         )
 
@@ -308,53 +346,59 @@ class LiveTrader:
     ) -> CycleReport:
         size = format_size(abs(float(position["contracts"] or 0.0)), contract_info["lot_size"], contract_info["min_size"])
         execution = self._execute_order_if_needed(order_side=order_side, size=size, reduce_only=True)
+        execution_ts = self._utc_now_iso()
+        live_price = self._get_live_reference_price(self.config.symbol, fallback=snapshot.close)
 
         if execution is not None and execution.status not in {"dry_run"}:
-            self.state_store.save(
-                LiveState(
-                    last_buy_signal_ts=snapshot.ts.isoformat() if order_side == "buy" else state.last_buy_signal_ts,
-                    last_sell_signal_ts=snapshot.ts.isoformat() if order_side == "sell" else state.last_sell_signal_ts,
-                    entry_signal_ts=None,
-                    entry_side=None,
-                    last_order_cl_ord_id=execution.cl_ord_id,
-                    strategy_started_at=state.strategy_started_at,
-                    strategy_start_equity=state.strategy_start_equity,
-                    day_anchor=state.day_anchor,
-                    day_start_equity=state.day_start_equity,
+            if not self._execution_is_rejected(execution):
+                self.state_store.save(
+                    LiveState(
+                        last_buy_signal_ts=snapshot.ts.isoformat() if order_side == "buy" else state.last_buy_signal_ts,
+                        last_sell_signal_ts=snapshot.ts.isoformat() if order_side == "sell" else state.last_sell_signal_ts,
+                        entry_signal_ts=None,
+                        entry_side=None,
+                        last_order_cl_ord_id=execution.cl_ord_id,
+                        strategy_started_at=state.strategy_started_at,
+                        strategy_start_equity=state.strategy_start_equity,
+                        day_anchor=state.day_anchor,
+                        day_start_equity=state.day_start_equity,
+                    )
                 )
-            )
-            self._record_close_trade(
-                live_trades,
-                signal_frame=signal_frame,
-                state=state,
-                position_side=position_side,
-                signal_ts=snapshot.ts.isoformat(),
-                fallback_price=snapshot.close,
-                fallback_contract_size=size,
-                fallback_base_size=float(position["base_qty"] or 0.0),
-                contract_info=contract_info,
-                execution=execution,
-                exit_reason=exit_reason,
-            )
-            self.trade_store.save(live_trades)
+            if self._execution_has_fill(execution):
+                self._record_close_trade(
+                    live_trades,
+                    signal_frame=signal_frame,
+                    state=state,
+                    position_side=position_side,
+                    signal_ts=snapshot.ts.isoformat(),
+                    fallback_ts=execution_ts,
+                    fallback_price=live_price,
+                    fallback_entry_price=float(position.get("avg_price") or 0.0),
+                    fallback_contract_size=size,
+                    fallback_base_size=float(position["base_qty"] or 0.0),
+                    contract_info=contract_info,
+                    execution=execution,
+                    exit_reason=exit_reason,
+                )
+                self.trade_store.save(live_trades)
 
         return self._build_report(
             action=order_side if size else "skip",
-            reason=exit_reason if size else "size_below_minimum",
+            reason=(self._resolve_execution_reason(execution, default=exit_reason) if size else "size_below_minimum"),
             signal_ts=snapshot.ts.isoformat(),
             in_position=True,
             base_balance=float(position["signed_base_qty"] or 0.0),
             quote_balance=quote_balance,
             suggested_size=size,
             held_bars=held_bars,
-            latest_close=snapshot.close,
+            latest_close=live_price,
             ema_fast=snapshot.ema_fast,
             ema_slow=snapshot.ema_slow,
             total_assets=total_assets,
             today_pnl=today_pnl,
             total_pnl=total_pnl,
             signal_frame=signal_frame,
-            trades_df=self._build_trades_frame(live_trades, latest_close=snapshot.close),
+            trades_df=self._build_trades_frame(live_trades, latest_close=live_price),
             execution=execution,
         )
 
@@ -437,27 +481,35 @@ class LiveTrader:
 
         positions = self.order_router.trade_client.get_positions(inst_id=self.config.symbol, inst_type="SWAP")
         signed_contracts = 0.0
+        weighted_avg_price = 0.0
+        total_abs_contracts = 0.0
         for row in positions:
             pos_value = self._extract_float(row, "pos", "availPos") or 0.0
             if pos_value == 0.0:
                 continue
             pos_side = str(row.get("posSide") or "").strip().lower()
+            avg_px = self._extract_float(row, "avgPx") or 0.0
             if pos_side == "long":
                 signed_contracts += abs(pos_value)
             elif pos_side == "short":
                 signed_contracts -= abs(pos_value)
             else:
                 signed_contracts += pos_value
+            if avg_px > 0.0:
+                weighted_avg_price += abs(pos_value) * avg_px
+                total_abs_contracts += abs(pos_value)
 
         side = "long" if signed_contracts > 0 else "short" if signed_contracts < 0 else None
         base_qty = self._contracts_to_base_qty(abs(signed_contracts), contract_info)
         signed_base_qty = base_qty if signed_contracts >= 0 else -base_qty
+        avg_price = (weighted_avg_price / total_abs_contracts) if total_abs_contracts > 0 else 0.0
         return {
             "side": side,
             "contracts": abs(signed_contracts),
             "signed_contracts": signed_contracts,
             "base_qty": base_qty,
             "signed_base_qty": signed_base_qty,
+            "avg_price": avg_price,
         }
 
     def _extract_contract_info(self, instrument: dict, *, latest_price: float) -> dict[str, float | str]:
@@ -502,6 +554,126 @@ class LiveTrader:
         if len(cross_downs) == 0:
             return None
         return cross_downs[-1]
+
+    def _select_pending_entry_signal(
+        self,
+        signal_frame: pd.DataFrame,
+        *,
+        state: LiveState,
+        snapshot,
+        allow_resume_catchup: bool,
+        live_trades: list[LiveTradeRecord],
+    ) -> PendingEntrySignal | None:
+        latest_ts = snapshot.ts.isoformat()
+        # Only allow entry during the bar immediately after a confirmed cross.
+        # Once the latest closed bar is no longer the cross bar, stale signals expire.
+        if self._allows_long() and snapshot.cross_up and state.last_buy_signal_ts != latest_ts:
+            return PendingEntrySignal(action="buy", trade_side="long", reason="golden_cross", signal_ts=latest_ts)
+        if self._allows_short() and snapshot.cross_down and state.last_sell_signal_ts != latest_ts:
+            return PendingEntrySignal(action="sell", trade_side="short", reason="dead_cross_short", signal_ts=latest_ts)
+        return None
+
+    def _with_live_preview_frame(self, report: CycleReport, *, signal_symbol: str) -> CycleReport:
+        report.signal_frame = self._build_live_preview_signal_frame(report.signal_frame, signal_symbol=signal_symbol)
+        return report
+
+    def _build_live_preview_signal_frame(self, signal_frame: pd.DataFrame, *, signal_symbol: str) -> pd.DataFrame:
+        if signal_frame.empty:
+            return signal_frame.copy()
+        try:
+            recent = self.public_client.download_recent(
+                signal_symbol,
+                self.config.period,
+                limit=2,
+                include_unconfirmed=True,
+            )
+        except Exception:
+            return signal_frame.copy()
+        if recent.empty:
+            return signal_frame.copy()
+        try:
+            latest_closed_ts = pd.Timestamp(signal_frame.index.max())
+            latest_recent_ts = pd.Timestamp(recent.index.max())
+        except Exception:
+            return signal_frame.copy()
+        if latest_recent_ts <= latest_closed_ts:
+            return signal_frame.copy()
+
+        base_columns = [name for name in ("open", "high", "low", "close", "volume", "turnover") if name in signal_frame.columns]
+        if not base_columns:
+            return signal_frame.copy()
+
+        merged_bars = pd.concat([signal_frame[base_columns], recent[base_columns]], axis=0)
+        merged_bars = merged_bars[~merged_bars.index.duplicated(keep="last")].sort_index().tail(len(signal_frame) + 1)
+
+        preview_frame = add_strategy_columns(merged_bars, self.config.fast_ema, self.config.slow_ema)
+        preview_frame["atr"] = atr(
+            preview_frame["high"],
+            preview_frame["low"],
+            preview_frame["close"],
+            max(int(self.config.atr_period), 1),
+        )
+        last_index = preview_frame.index[-1]
+        preview_frame.at[last_index, "cross_up"] = False
+        preview_frame.at[last_index, "cross_down"] = False
+        return preview_frame
+
+    def _latest_processed_signal_ts(self, state: LiveState) -> pd.Timestamp | None:
+        candidates: list[pd.Timestamp] = []
+        for raw in (state.last_buy_signal_ts, state.last_sell_signal_ts):
+            normalized = self._normalize_timestamp_for_index(raw, None)
+            if normalized is not None:
+                candidates.append(normalized)
+        if not candidates:
+            return None
+        return max(candidates)
+
+    def _find_latest_cross_after(
+        self,
+        signal_frame: pd.DataFrame,
+        column: str,
+        *,
+        after_ts: pd.Timestamp | None,
+    ) -> pd.Timestamp | None:
+        if signal_frame.empty or column not in signal_frame.columns:
+            return None
+        try:
+            candidates = signal_frame.index[signal_frame[column].fillna(False)]
+        except Exception:
+            return None
+        if len(candidates) == 0:
+            return None
+        if after_ts is None:
+            return candidates[-1]
+        cutoff = self._normalize_timestamp_for_index(after_ts, signal_frame.index)
+        if cutoff is None:
+            return candidates[-1]
+        valid = candidates[candidates > cutoff]
+        if len(valid) == 0:
+            return None
+        return valid[-1]
+
+    def _normalize_timestamp_for_index(
+        self,
+        ts_value: str | pd.Timestamp | None,
+        index: pd.Index | None,
+    ) -> pd.Timestamp | None:
+        if ts_value in (None, ""):
+            return None
+        try:
+            stamp = pd.Timestamp(ts_value)
+        except Exception:
+            return None
+        if index is None or not hasattr(index, "tz"):
+            return stamp
+        index_tz = getattr(index, "tz", None)
+        if index_tz is not None and stamp.tzinfo is None:
+            stamp = stamp.tz_localize(index_tz)
+        elif index_tz is None and stamp.tzinfo is not None:
+            stamp = stamp.tz_localize(None)
+        elif index_tz is not None and stamp.tzinfo is not None:
+            stamp = stamp.tz_convert(index_tz)
+        return stamp
 
     def _locate_bar_index(self, signal_frame: pd.DataFrame, ts_value: str | None) -> int | None:
         if signal_frame.empty or not ts_value:
@@ -552,6 +724,11 @@ class LiveTrader:
         open_trade: LiveTradeRecord | None,
         position_side: str | None,
     ) -> ExitEvaluation:
+        if self._is_trend_mode():
+            if position_side == "short":
+                return self._evaluate_short_trend_exit(signal_frame, entry_signal_ts=entry_signal_ts, open_trade=open_trade)
+            return self._evaluate_long_trend_exit(signal_frame, entry_signal_ts=entry_signal_ts, open_trade=open_trade)
+
         if position_side == "short":
             ema_eval = self._evaluate_short_exit(signal_frame, entry_signal_ts)
             atr_eval = self._evaluate_short_atr_exit(signal_frame, entry_signal_ts=entry_signal_ts, open_trade=open_trade)
@@ -594,6 +771,80 @@ class LiveTrader:
         if self.config.hold_bars > 0 and held_bars >= self.config.hold_bars:
             return ExitEvaluation(True, "time_exit", held_bars)
         return ExitEvaluation(False, None, held_bars)
+
+    def _evaluate_long_trend_exit(
+        self,
+        signal_frame: pd.DataFrame,
+        *,
+        entry_signal_ts: str | None,
+        open_trade: LiveTradeRecord | None,
+    ) -> ExitEvaluation:
+        return self._evaluate_trend_exit(signal_frame, entry_signal_ts=entry_signal_ts, open_trade=open_trade, position_side="long")
+
+    def _evaluate_short_trend_exit(
+        self,
+        signal_frame: pd.DataFrame,
+        *,
+        entry_signal_ts: str | None,
+        open_trade: LiveTradeRecord | None,
+    ) -> ExitEvaluation:
+        return self._evaluate_trend_exit(signal_frame, entry_signal_ts=entry_signal_ts, open_trade=open_trade, position_side="short")
+
+    def _evaluate_trend_exit(
+        self,
+        signal_frame: pd.DataFrame,
+        *,
+        entry_signal_ts: str | None,
+        open_trade: LiveTradeRecord | None,
+        position_side: str,
+    ) -> ExitEvaluation:
+        stop_mult = float(self.config.stop_loss_atr_multiplier or 0.0)
+        if stop_mult <= 0.0 or signal_frame.empty or open_trade is None or "atr" not in signal_frame.columns:
+            return ExitEvaluation(False, None, 0)
+
+        entry_ref_ts = entry_signal_ts or open_trade.entry_ts
+        entry_index = self._locate_bar_index(signal_frame, entry_ref_ts)
+        if entry_index is None:
+            return ExitEvaluation(False, None, 0)
+
+        try:
+            entry_atr = float(signal_frame["atr"].iloc[entry_index])
+        except Exception:
+            return ExitEvaluation(False, None, 0)
+        if not pd.notna(entry_atr) or entry_atr <= 0.0:
+            return ExitEvaluation(False, None, 0)
+
+        entry_price = float(open_trade.entry_price or 0.0)
+        if entry_price <= 0.0:
+            fallback_index = min(entry_index + 1, len(signal_frame) - 1)
+            entry_price = float(signal_frame["close"].iloc[fallback_index])
+
+        stop_distance = entry_atr * stop_mult
+        if stop_distance <= 0.0:
+            return ExitEvaluation(False, None, 0)
+
+        fee_buffer = self._trend_fee_buffer(entry_price=entry_price, position_side=position_side)
+        current_stop = entry_price + stop_distance if position_side == "short" else entry_price - stop_distance
+
+        for idx in range(entry_index + 1, len(signal_frame)):
+            row = signal_frame.iloc[idx]
+            held_bars = idx - entry_index
+            if position_side == "short":
+                if float(row["high"]) >= current_stop:
+                    return ExitEvaluation(True, "trend_stop_loss", held_bars)
+                achieved_r = int(max((entry_price - float(row["low"])) / stop_distance, 0.0))
+                if achieved_r >= 1:
+                    candidate_stop = entry_price - max(achieved_r - 1, 0) * stop_distance - fee_buffer
+                    current_stop = min(current_stop, candidate_stop)
+            else:
+                if float(row["low"]) <= current_stop:
+                    return ExitEvaluation(True, "trend_stop_loss", held_bars)
+                achieved_r = int(max((float(row["high"]) - entry_price) / stop_distance, 0.0))
+                if achieved_r >= 1:
+                    candidate_stop = entry_price + max(achieved_r - 1, 0) * stop_distance + fee_buffer
+                    current_stop = max(current_stop, candidate_stop)
+
+        return ExitEvaluation(False, None, max(len(signal_frame) - 1 - entry_index, 0))
 
     def _evaluate_long_atr_exit(
         self,
@@ -735,7 +986,7 @@ class LiveTrader:
         if not entry_ts:
             return False
 
-        entry_price = self._lookup_price(signal_frame, entry_ts, fallback=fallback_price)
+        entry_price = float(fallback_price)
         trades.append(
             LiveTradeRecord(
                 trade_id=f"recover-{position_side}-{entry_ts}",
@@ -758,6 +1009,7 @@ class LiveTrader:
         trade_side: str,
         signal_frame: pd.DataFrame,
         signal_ts: str,
+        fallback_ts: str,
         fallback_price: float,
         fallback_contract_size: str | None,
         fallback_base_size: float,
@@ -774,8 +1026,8 @@ class LiveTrader:
         if entry_base_size <= 0:
             return
 
-        entry_ts = self._execution_timestamp(execution) or signal_ts
-        entry_price = self._execution_price(execution) or self._lookup_price(signal_frame, entry_ts, fallback=fallback_price)
+        entry_ts = self._execution_timestamp(execution) or fallback_ts
+        entry_price = self._execution_price(execution) or float(fallback_price)
         entry_fee = self._execution_fee(execution)
         if entry_fee <= 0:
             entry_fee = self._estimate_fee(entry_price, entry_base_size)
@@ -804,7 +1056,9 @@ class LiveTrader:
         state: LiveState,
         position_side: str,
         signal_ts: str,
+        fallback_ts: str,
         fallback_price: float,
+        fallback_entry_price: float,
         fallback_contract_size: str | None,
         fallback_base_size: float,
         contract_info: dict[str, float | str],
@@ -819,7 +1073,7 @@ class LiveTrader:
                 state=state,
                 position_side=position_side,
                 position_base_size=fallback_base_size,
-                fallback_price=fallback_price,
+                fallback_price=float(fallback_entry_price or fallback_price),
             )
             open_trade = self._find_open_trade(trades)
         if open_trade is None:
@@ -830,8 +1084,8 @@ class LiveTrader:
         if exit_base_size <= 0:
             exit_base_size = max(float(open_trade.entry_size), 0.0)
 
-        exit_ts = self._execution_timestamp(execution) or signal_ts
-        exit_price = self._execution_price(execution) or self._lookup_price(signal_frame, exit_ts, fallback=fallback_price)
+        exit_ts = self._execution_timestamp(execution) or fallback_ts
+        exit_price = self._execution_price(execution) or float(fallback_price)
         exit_fee = self._execution_fee(execution)
         if exit_fee <= 0:
             exit_fee = self._estimate_fee(exit_price, exit_base_size)
@@ -852,12 +1106,83 @@ class LiveTrader:
         )
         open_trade.status = "closed"
 
+    def _reconcile_flat_position_trades(
+        self,
+        trades: list[LiveTradeRecord],
+        *,
+        signal_frame: pd.DataFrame,
+        fallback_price: float,
+        signal_ts: str,
+    ) -> bool:
+        open_trade = self._find_open_trade(trades)
+        if open_trade is None:
+            return False
+        open_trade.exit_ts = signal_ts
+        open_trade.exit_price = None
+        open_trade.exit_size = max(float(open_trade.entry_size or 0.0), 0.0)
+        open_trade.exit_fee = 0.0
+        open_trade.exit_reason = "flat_position_sync"
+        open_trade.fees = float(open_trade.entry_fee or 0.0) + float(open_trade.exit_fee or 0.0)
+        open_trade.pnl = None
+        open_trade.status = "closed"
+        return True
+
     @staticmethod
     def _find_open_trade(trades: list[LiveTradeRecord]) -> LiveTradeRecord | None:
         for trade in reversed(trades):
             if str(trade.status).lower() == "open" and not trade.exit_ts:
                 return trade
         return None
+
+    @staticmethod
+    def _find_latest_closed_trade(trades: list[LiveTradeRecord]) -> LiveTradeRecord | None:
+        for trade in reversed(trades):
+            if str(trade.status).lower() != "open" or trade.exit_ts:
+                return trade
+        return None
+
+    def _can_resume_regime_entry(
+        self,
+        signal_frame: pd.DataFrame,
+        *,
+        regime_side: str,
+        latest_same_side_cross: pd.Timestamp | None,
+        latest_opposite_cross: pd.Timestamp | None,
+        processed_same_side_signal_ts: str | None,
+        last_closed_trade: LiveTradeRecord | None,
+    ) -> bool:
+        if signal_frame.empty or latest_same_side_cross is None:
+            return False
+
+        latest_row = signal_frame.iloc[-1]
+        ema_fast = float(latest_row.get("ema_fast", 0.0))
+        ema_slow = float(latest_row.get("ema_slow", 0.0))
+        if regime_side == "long":
+            if not self._allows_long() or ema_fast <= ema_slow:
+                return False
+        else:
+            if not self._allows_short() or ema_fast >= ema_slow:
+                return False
+
+        if latest_opposite_cross is not None and latest_same_side_cross <= latest_opposite_cross:
+            return False
+
+        processed_same = self._normalize_timestamp_for_index(processed_same_side_signal_ts, signal_frame.index)
+        if processed_same is None or processed_same != latest_same_side_cross:
+            return False
+
+        if last_closed_trade is None or last_closed_trade.side != regime_side or not last_closed_trade.exit_ts:
+            return False
+
+        blocked_reasons = {"dead_cross", "golden_cross_cover", "flat_position_sync"}
+        if str(last_closed_trade.exit_reason or "").strip() in blocked_reasons:
+            return False
+
+        last_exit_ts = self._normalize_timestamp_for_index(last_closed_trade.exit_ts, signal_frame.index)
+        if last_exit_ts is None or last_exit_ts < latest_same_side_cross:
+            return False
+
+        return True
 
     def _build_trades_frame(self, trades: list[LiveTradeRecord], *, latest_close: float) -> pd.DataFrame:
         rows: list[dict] = []
@@ -938,6 +1263,32 @@ class LiveTrader:
         order = execution.response.get("order")
         return order if isinstance(order, dict) else execution.response
 
+    def _execution_has_fill(self, execution: OrderExecutionResult | None) -> bool:
+        if execution is None:
+            return False
+        order = self._execution_order_payload(execution)
+        filled_size = self._extract_float(order, "accFillSz", "fillSz")
+        if filled_size is not None and filled_size > 0:
+            return True
+        state = str(order.get("state") or execution.status or "").strip().lower()
+        return state in {"filled", "partially_filled"}
+
+    def _execution_is_rejected(self, execution: OrderExecutionResult | None) -> bool:
+        if execution is None:
+            return False
+        order = self._execution_order_payload(execution)
+        state = str(order.get("state") or execution.status or "").strip().lower()
+        return state in {"canceled", "cancelled", "failed", "rejected"}
+
+    def _resolve_execution_reason(self, execution: OrderExecutionResult | None, *, default: str) -> str:
+        if execution is None or execution.status == "dry_run":
+            return default
+        if self._execution_is_rejected(execution):
+            return "order_not_filled"
+        if not self._execution_has_fill(execution):
+            return "order_wait_fill"
+        return default
+
     def _execution_price(self, execution: OrderExecutionResult | None) -> float | None:
         order = self._execution_order_payload(execution)
         return self._extract_float(order, "avgPx", "fillPx", "px")
@@ -999,10 +1350,36 @@ class LiveTrader:
                 return float(fallback)
         return float(fallback)
 
+    def _get_live_reference_price(self, symbol: str, *, fallback: float) -> float:
+        try:
+            return float(self.public_client.get_ticker_last(symbol))
+        except Exception:
+            return float(fallback)
+
+    @staticmethod
+    def _utc_now_iso() -> str:
+        return pd.Timestamp.now(tz="UTC").isoformat()
+
     def _estimate_fee(self, price: float, size: float) -> float:
         if price <= 0 or size <= 0:
             return 0.0
         return abs(price * size) * float(self.config.fee_bps) / 10_000.0
+
+    def _trend_fee_buffer(self, *, entry_price: float, position_side: str) -> float:
+        fee_rate = float(self.config.fee_bps or 0.0) / 10_000.0
+        if fee_rate <= 0.0 or entry_price <= 0.0:
+            return 0.0
+        if position_side == "short":
+            breakeven = entry_price * (1.0 - fee_rate) / max(1.0 + fee_rate, 1e-12)
+            return max(entry_price - breakeven, 0.0)
+        breakeven = entry_price * (1.0 + fee_rate) / max(1.0 - fee_rate, 1e-12)
+        return max(breakeven - entry_price, 0.0)
+
+    def _is_range_mode(self) -> bool:
+        return str(self.config.entry_mode or "range").strip().lower() != "trend"
+
+    def _is_trend_mode(self) -> bool:
+        return not self._is_range_mode()
 
     def _refresh_equity_baselines(self, state: LiveState, *, total_assets: float) -> tuple[LiveState, float, float]:
         local_today = pd.Timestamp.now(tz="Asia/Shanghai").date().isoformat()
@@ -1067,11 +1444,17 @@ def _translate_reason(reason: str) -> str:
         "dead_cross": "EMA21 下穿 EMA55",
         "dead_cross_short": "EMA21 下穿 EMA55，准备开空",
         "golden_cross_cover": "EMA21 上穿 EMA55，准备平空",
+        "bullish_regime_resume": "多头趋势仍在，空仓后允许再次开多",
+        "bearish_regime_resume": "空头趋势仍在，空仓后允许再次开空",
         "slow_ema_stop": "价格反穿慢线，触发止损",
         "atr_stop_loss": "触发 ATR 止损",
         "atr_take_profit": "触发 ATR 止盈",
+        "trend_stop_loss": "触发趋势移动止损",
+        "flat_position_sync": "检测到空仓，已自动纠正（盈亏待确认）",
         "position_open_no_exit": "当前持仓中，暂未触发平仓",
         "no_entry_signal": "当前没有新的入场信号",
+        "order_wait_fill": "订单已提交，等待实际成交",
+        "order_not_filled": "订单未成交或已被撤销",
         "size_below_minimum": "下单数量低于最小合约张数",
         "time_exit": "达到时间退出条件",
         "exit_signal": "触发平仓条件",

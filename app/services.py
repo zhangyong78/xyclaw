@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -16,6 +17,7 @@ from data.fetch_history import download_history_bars, save_candles_csv
 from data.okx_rest import OKXPublicClient
 from data.resample import DEFAULT_PERIODS, load_1h_csv, resample_bars
 from live.config import LiveRunConfig, build_okx_credentials, load_okx_credentials
+from live.okx_rest import OKXTradeClient
 from live.order_router import OrderRouter
 from live.precision import format_size
 from live.trader import LiveTrader
@@ -43,6 +45,7 @@ class BacktestRequest:
     fixed_position_qty: float | None = None
     max_allocation_pct: float = 0.95
     signal_side: str = "long_only"
+    entry_mode: str = "range"
     stop_loss_atr_multiplier: float | None = None
     take_profit_r_multiple: float | None = None
     periods: list[str] | None = None
@@ -56,6 +59,7 @@ class LiveRequest:
     period: str = "1H"
     account_tag: str = "default"
     signal_side: str = "long_only"
+    entry_mode: str = "range"
     leverage: int = 1
     bars: int = 240
     risk_amount: float = 100.0
@@ -88,6 +92,16 @@ class LiveManualOrderRequest:
     leverage: int = 1
     order_timeout: int = 25
     simulate: bool = False
+    base_url: str | None = None
+    ws_private_url: str | None = None
+    api_key: str | None = None
+    api_secret: str | None = None
+    api_passphrase: str | None = None
+
+
+@dataclass(slots=True)
+class LiveAuthTestRequest:
+    account_tag: str = "default"
     base_url: str | None = None
     ws_private_url: str | None = None
     api_key: str | None = None
@@ -172,6 +186,7 @@ def run_backtest(request: BacktestRequest) -> dict[str, Any]:
         fixed_position_qty=request.fixed_position_qty,
         max_allocation_pct=request.max_allocation_pct,
         signal_side=request.signal_side,
+        entry_mode=request.entry_mode,
         stop_loss_atr_multiplier=request.stop_loss_atr_multiplier,
         take_profit_r_multiple=request.take_profit_r_multiple,
     )
@@ -244,6 +259,7 @@ def run_backtest(request: BacktestRequest) -> dict[str, Any]:
         "slow_ema": request.slow_ema,
         "atr_period": request.atr_period,
         "signal_side": request.signal_side,
+        "entry_mode": request.entry_mode,
         "stop_loss_atr_multiplier": request.stop_loss_atr_multiplier,
         "take_profit_r_multiple": request.take_profit_r_multiple,
         "history_bars": int(_resolve_requested_period_bars(request, top_period)),
@@ -316,6 +332,7 @@ def run_live_check(request: LiveRequest) -> dict[str, Any]:
         period=request.period,
         account_tag=request.account_tag,
         signal_side=request.signal_side,
+        entry_mode=request.entry_mode,
         leverage=request.leverage,
         bars_to_fetch=request.bars,
         risk_amount=request.risk_amount,
@@ -475,6 +492,241 @@ def submit_live_manual_limit_order(request: LiveManualOrderRequest) -> dict[str,
         "execution": _to_jsonable(asdict(execution)),
         "submitted_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def test_live_authentication(request: LiveAuthTestRequest) -> dict[str, Any]:
+    missing_fields: list[str] = []
+    if not str(request.api_key or "").strip():
+        missing_fields.append("API Key")
+    if not str(request.api_secret or "").strip():
+        missing_fields.append("API Secret")
+    if not str(request.api_passphrase or "").strip():
+        missing_fields.append("Passphrase")
+    if missing_fields:
+        return {
+            "request": _to_jsonable(asdict(request)),
+            "status": "failed",
+            "summary": f"当前API配置不完整，缺少：{' / '.join(missing_fields)}。",
+            "suggestion": "请先补全缺少的字段，再点击“测试认证”。",
+            "checks": [],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    real_check = _probe_okx_auth_mode(request, simulated=False)
+    simulated_check = _probe_okx_auth_mode(request, simulated=True)
+    checks = [real_check, simulated_check]
+
+    passed_checks = [item for item in checks if bool(item.get("ok"))]
+    if len(passed_checks) == 2:
+        summary = "当前API认证通过：真实盘和模拟盘都可用。"
+        suggestion = "这套API可以同时用于真实盘和模拟盘。"
+        status = "ok"
+    elif real_check.get("ok"):
+        summary = "当前API认证通过：真实盘可用，模拟盘不可用。"
+        suggestion = f"如果你要走模拟盘，请换模拟盘API。模拟盘失败原因：{simulated_check.get('summary') or '-'}"
+        status = "partial"
+    elif simulated_check.get("ok"):
+        summary = "当前API认证通过：模拟盘可用，真实盘不可用。"
+        suggestion = f"如果你要走真实盘，请换真实盘API，或检查真实盘权限/IP白名单。真实盘失败原因：{real_check.get('summary') or '-'}"
+        status = "partial"
+    else:
+        summary = "当前API认证失败：真实盘和模拟盘都没有通过。"
+        suggestion = (
+            f"真实盘：{real_check.get('summary') or '-'}；"
+            f"模拟盘：{simulated_check.get('summary') or '-'}"
+        )
+        status = "failed"
+
+    preferred_check = next((item for item in checks if item.get("ok")), real_check)
+    return {
+        "request": _to_jsonable(asdict(request)),
+        "status": status,
+        "summary": summary,
+        "suggestion": suggestion,
+        "checks": checks,
+        "account_name": preferred_check.get("account_name") or "",
+        "account_uid": preferred_check.get("account_uid") or "",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _probe_okx_auth_mode(request: LiveAuthTestRequest, *, simulated: bool) -> dict[str, Any]:
+    mode_label = "模拟盘" if simulated else "真实盘"
+    credentials = build_okx_credentials(
+        api_key=str(request.api_key or ""),
+        secret_key=str(request.api_secret or ""),
+        passphrase=str(request.api_passphrase or ""),
+        simulated=simulated,
+        base_url=request.base_url,
+        ws_private_url=request.ws_private_url,
+    )
+    client = OKXTradeClient(credentials, timeout=15, connect_timeout=10, max_retries=1, retry_delay=0)
+    try:
+        identity = client.get_account_identity()
+    except Exception as exc:
+        diagnosis = _diagnose_okx_auth_exception(exc, simulated=simulated, stage="identity")
+        return {
+            "mode": mode_label,
+            "ok": False,
+            "summary": diagnosis["summary"],
+            "detail": diagnosis["detail"],
+            "reason": diagnosis["reason"],
+            "account_name": "",
+            "account_uid": "",
+            "usdt_available": None,
+        }
+
+    account_name = str(identity.get("account_name") or "").strip()
+    account_uid = str(identity.get("account_uid") or "").strip()
+    try:
+        balances = client.get_balances(["USDT"])
+        usdt_detail = balances.get("USDT", {}) if isinstance(balances, dict) else {}
+        usdt_available = usdt_detail.get("availBal")
+    except Exception as exc:
+        diagnosis = _diagnose_okx_auth_exception(exc, simulated=simulated, stage="balance")
+        return {
+            "mode": mode_label,
+            "ok": False,
+            "summary": diagnosis["summary"],
+            "detail": diagnosis["detail"],
+            "reason": diagnosis["reason"],
+            "account_name": account_name,
+            "account_uid": account_uid,
+            "usdt_available": None,
+        }
+
+    return {
+        "mode": mode_label,
+        "ok": True,
+        "summary": f"{mode_label}认证通过。",
+        "detail": "账户认证与余额读取均已通过。",
+        "reason": "ok",
+        "account_name": account_name,
+        "account_uid": account_uid,
+        "usdt_available": usdt_available,
+    }
+
+
+def _diagnose_okx_auth_exception(exc: Exception, *, simulated: bool, stage: str) -> dict[str, str]:
+    message = str(exc).strip()
+    lowered = message.lower()
+    okx_code = _extract_okx_error_code(message)
+    okx_msg = _extract_okx_error_message(message)
+    mode_label = "模拟盘" if simulated else "真实盘"
+    detail = okx_msg or message or "未知错误"
+
+    if any(
+        hint in lowered
+        for hint in (
+            "read timed out",
+            "connect timed out",
+            "connection aborted",
+            "connection reset",
+            "max retries exceeded",
+            "failed to establish a new connection",
+            "httpsconnectionpool",
+            "temporarily unavailable",
+        )
+    ):
+        return {
+            "reason": "network",
+            "summary": f"{mode_label}连接 OKX 超时或网络不稳定。",
+            "detail": detail,
+        }
+
+    if "whitelist" in lowered and "ip" in lowered:
+        return {
+            "reason": "ip_whitelist",
+            "summary": f"{mode_label}认证失败：当前电脑 IP 不在 API 白名单里。",
+            "detail": detail,
+        }
+
+    if "current environment" in lowered or okx_code == "50101":
+        expected = "模拟盘" if not simulated else "真实盘"
+        return {
+            "reason": "environment",
+            "summary": f"{mode_label}认证失败：这套 API 更像是{expected}环境的 Key。",
+            "detail": detail,
+        }
+
+    if "passphrase" in lowered:
+        return {
+            "reason": "passphrase",
+            "summary": f"{mode_label}认证失败：Passphrase 不正确。",
+            "detail": detail,
+        }
+
+    if "invalid sign" in lowered or "invalid signature" in lowered or okx_code == "50113":
+        return {
+            "reason": "secret_or_signature",
+            "summary": f"{mode_label}认证失败：API Secret 不正确，或签名校验失败。",
+            "detail": detail,
+        }
+
+    if ("api key" in lowered and ("not exist" in lowered or "doesn't exist" in lowered or "does not exist" in lowered)) or okx_code in {"50111", "50119"}:
+        return {
+            "reason": "api_key",
+            "summary": f"{mode_label}认证失败：API Key 不正确，或该 Key 已被删除。",
+            "detail": detail,
+        }
+
+    if "permission" in lowered or "read only" in lowered or "scope" in lowered:
+        return {
+            "reason": "permission",
+            "summary": f"{mode_label}认证失败：API 权限不足。",
+            "detail": detail,
+        }
+
+    if stage == "balance" and ("401" in lowered or "unauthorized" in lowered):
+        return {
+            "reason": "read_permission",
+            "summary": f"{mode_label}账户认证通过，但余额读取失败，可能没开读取权限。",
+            "detail": detail,
+        }
+
+    if "timestamp" in lowered or "expired" in lowered:
+        return {
+            "reason": "timestamp",
+            "summary": f"{mode_label}认证失败：本机时间偏差过大，签名时间失效。",
+            "detail": detail,
+        }
+
+    if "401" in lowered or "unauthorized" in lowered:
+        return {
+            "reason": "unauthorized",
+            "summary": f"{mode_label}认证失败：请检查 API Key / API Secret / Passphrase、权限和 IP 白名单。",
+            "detail": detail,
+        }
+
+    return {
+        "reason": "unknown",
+        "summary": f"{mode_label}认证失败：{detail}",
+        "detail": detail,
+    }
+
+
+def _extract_okx_error_code(message: str) -> str:
+    patterns = [
+        r"'code'\s*:\s*'([^']+)'",
+        r'"code"\s*:\s*"([^"]+)"',
+    ]
+    for pattern in patterns:
+        matched = re.search(pattern, message)
+        if matched:
+            return str(matched.group(1) or "").strip()
+    return ""
+
+
+def _extract_okx_error_message(message: str) -> str:
+    patterns = [
+        r"'msg'\s*:\s*'([^']+)'",
+        r'"msg"\s*:\s*"([^"]+)"',
+    ]
+    for pattern in patterns:
+        matched = re.search(pattern, message)
+        if matched:
+            return str(matched.group(1) or "").strip()
+    return message
 
 
 def _extract_swap_contract_info(*, instrument: dict, reference_price: float) -> dict[str, float | str]:

@@ -10,6 +10,24 @@ from live.auth import rest_timestamp, sign_rest
 from live.config import OKXCredentials
 
 
+def _describe_http_error_response(response: requests.Response | None) -> str:
+    if response is None:
+        return "unknown http error"
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if payload is not None:
+        return json.dumps(payload, ensure_ascii=False)
+    text = (response.text or "").strip()
+    if text:
+        return text
+    reason = (response.reason or "").strip()
+    if reason:
+        return reason
+    return f"url={response.url}"
+
+
 class OKXTradeClient:
     def __init__(
         self,
@@ -65,7 +83,7 @@ class OKXTradeClient:
         data = payload.get("data", [])
         return data if isinstance(data, list) else []
 
-    def set_leverage(self, *, inst_id: str, leverage: int | float, mgn_mode: str = "cross") -> dict:
+    def set_leverage(self, *, inst_id: str, leverage: int | float, mgn_mode: str = "isolated") -> dict:
         payload = self._request(
             "POST",
             "/api/v5/account/set-leverage",
@@ -137,6 +155,12 @@ class OKXTradeClient:
                 if result.get("code") != "0":
                     raise RuntimeError(f"OKX request failed: {result}")
                 return result
+            except requests.exceptions.HTTPError as exc:
+                last_error = exc
+                if attempt >= self.max_retries:
+                    status_code = exc.response.status_code if exc.response is not None else "?"
+                    detail = _describe_http_error_response(exc.response)
+                    raise RuntimeError(f"OKX HTTP {status_code}: {detail}") from exc
             except requests.exceptions.Timeout as exc:
                 last_error = exc
                 if attempt >= self.max_retries:

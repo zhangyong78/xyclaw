@@ -66,6 +66,7 @@ class BacktestEngine:
                             qty=qty,
                             entry_fee=entry_fee,
                             stop_price=stop_price,
+                            initial_stop_price=stop_price,
                             take_profit_price=take_profit_price,
                         )
                     pending = None
@@ -136,6 +137,9 @@ class BacktestEngine:
                         atr_value=self._safe_float(row.get("atr")),
                     )
                     continue
+                continue
+
+            if self._is_trend_mode():
                 continue
 
             held_bars = i - position.signal_index
@@ -212,7 +216,7 @@ class BacktestEngine:
             stop_distance = atr_value * stop_mult
             stop_price = entry_price + stop_distance if position_side == "short" else entry_price - stop_distance
             take_profit_multiple = float(self.config.take_profit_r_multiple or 0.0)
-            if take_profit_multiple > 0.0:
+            if self._is_range_mode() and take_profit_multiple > 0.0:
                 take_profit_price = (
                     entry_price - stop_distance * take_profit_multiple
                     if position_side == "short"
@@ -225,6 +229,9 @@ class BacktestEngine:
         stop_mult = float(self.config.stop_loss_atr_multiplier or 0.0)
         if stop_mult <= 0.0:
             return None
+
+        if self._is_trend_mode():
+            return self._resolve_trend_intrabar_exit(row=row, position=position)
 
         bar_low = float(row["low"])
         bar_high = float(row["high"])
@@ -252,6 +259,26 @@ class BacktestEngine:
             return "atr_stop_loss", apply_slippage(stop_price, exit_side, self.config.slippage_bps)
 
         return "atr_take_profit", apply_slippage(float(take_profit_price), exit_side, self.config.slippage_bps)
+
+    def _resolve_trend_intrabar_exit(self, *, row: pd.Series, position: Position) -> tuple[str, float] | None:
+        stop_price = float(position.stop_price)
+        if stop_price <= 0.0:
+            return None
+
+        if position.side == "short":
+            stop_hit = float(row["high"]) >= stop_price
+            exit_side = "buy"
+        else:
+            stop_hit = float(row["low"]) <= stop_price
+            exit_side = "sell"
+
+        if stop_hit:
+            return "trend_stop_loss", apply_slippage(stop_price, exit_side, self.config.slippage_bps)
+
+        next_stop = self._next_trend_stop(row=row, position=position)
+        if next_stop is not None:
+            position.stop_price = next_stop
+        return None
 
     def _close_position(
         self,
@@ -290,6 +317,50 @@ class BacktestEngine:
 
     def _allows_short(self) -> bool:
         return self.config.signal_side in {"short_only", "both"}
+
+    def _next_trend_stop(self, *, row: pd.Series, position: Position) -> float | None:
+        stop_distance = self._position_stop_distance(position)
+        if stop_distance <= 0.0:
+            return None
+
+        fee_buffer = self._breakeven_fee_buffer(position)
+        if position.side == "short":
+            achieved_r = int(max((float(position.entry_price) - float(row["low"])) / stop_distance, 0.0))
+            if achieved_r < 1:
+                return None
+            lock_r = max(achieved_r - 1, 0)
+            candidate = float(position.entry_price) - lock_r * stop_distance - fee_buffer
+            return min(float(position.stop_price), candidate)
+
+        achieved_r = int(max((float(row["high"]) - float(position.entry_price)) / stop_distance, 0.0))
+        if achieved_r < 1:
+            return None
+        lock_r = max(achieved_r - 1, 0)
+        candidate = float(position.entry_price) + lock_r * stop_distance + fee_buffer
+        return max(float(position.stop_price), candidate)
+
+    @staticmethod
+    def _position_stop_distance(position: Position) -> float:
+        return abs(float(position.entry_price) - float(position.initial_stop_price))
+
+    def _breakeven_fee_buffer(self, position: Position) -> float:
+        fee_rate = float(self.config.fee_bps or 0.0) / 10_000.0
+        if fee_rate <= 0.0:
+            return 0.0
+        entry_price = float(position.entry_price)
+        if entry_price <= 0.0:
+            return 0.0
+        if position.side == "short":
+            breakeven = entry_price * (1.0 - fee_rate) / max(1.0 + fee_rate, 1e-12)
+            return max(entry_price - breakeven, 0.0)
+        breakeven = entry_price * (1.0 + fee_rate) / max(1.0 - fee_rate, 1e-12)
+        return max(breakeven - entry_price, 0.0)
+
+    def _is_range_mode(self) -> bool:
+        return str(self.config.entry_mode or "range").strip().lower() != "trend"
+
+    def _is_trend_mode(self) -> bool:
+        return not self._is_range_mode()
 
     @staticmethod
     def _exit_order_action(position_side: str) -> str:
