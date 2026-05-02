@@ -46,10 +46,12 @@ BACKTEST_SYMBOL_OPTIONS = [f"{symbol}永续" for symbol in PERPETUAL_SYMBOL_BASE
 LIVE_SYMBOL_OPTIONS = [f"{symbol}永续" for symbol in PERPETUAL_SYMBOL_BASES]
 ORDER_SYMBOL_OPTIONS = [f"{symbol}永续" for symbol in PERPETUAL_SYMBOL_BASES]
 SIGNAL_SIDE_OPTIONS = ["\u53ea\u505a\u591a", "\u53ea\u505a\u7a7a", "\u53cc\u5411"]
-LEVERAGE_OPTIONS = [str(value) for value in range(1, 31)]
+LEVERAGE_OPTIONS = [str(value) for value in range(1, 101)]
 HISTORY_BAR_LIMITS = {"5m": 10_000, "15m": 10_000, "1H": 10_000, "4H": 10_000}
 MAX_LIVE_STRATEGIES = 999
 MAX_BACKTEST_STRATEGIES = 999
+MAX_LIVE_API_PROFILES = 100
+DEFAULT_LIVE_API_PROFILE_COUNT = 5
 LIVE_STRATEGY_SLOT_OPTIONS = [str(value) for value in range(1, MAX_LIVE_STRATEGIES + 1)]
 BACKTEST_CACHE_DIR = Path("desktop_reports") / "cache"
 AUTO_4H_CACHE_SYNC_MS = 60_000
@@ -117,6 +119,8 @@ class TradingDesktopApp(Tk):
         self.live_trade_detail_tree: ttk.Treeview | None = None
         self.live_trade_detail_tree2: ttk.Treeview | None = None
         self.live_strategy_tree: ttk.Treeview | None = None
+        self.live_chart_view_combos: list[ttk.Combobox] = []
+        self.live_trade_detail_view_combos: list[ttk.Combobox] = []
         self.live_log_text: Text | None = None
         self.live_strategy_records: dict[str, dict[str, str]] = {}
         self.live_strategy_workers: dict[str, dict[str, object]] = {}
@@ -126,6 +130,7 @@ class TradingDesktopApp(Tk):
         self.backtest_task_results: list[dict[str, object]] = []
         self.backtest_view_combos_all: list[ttk.Combobox] = []
         self.backtest_view_combos_task: list[ttk.Combobox] = []
+        self.backtest_view_combos_trade_detail: list[ttk.Combobox] = []
         self.active_live_strategy_id: str | None = None
         self._live_strategy_counter = 0
         self.live_strategy_form_map: dict[str, str] = {}
@@ -240,7 +245,8 @@ class TradingDesktopApp(Tk):
         self.bt_take_atr = StringVar(value="2")
         self.bt_fixed_size = StringVar(value="-")
         self.backtest_view_slot = StringVar(value="全部")
-        self.backtest_view_slot_task = StringVar(value="")
+        self.backtest_view_slot_task = StringVar(value="不选")
+        self.backtest_trade_detail_view_slot = StringVar(value="全部")
 
         self.live_strategy = StringVar(value=STRATEGY_OPTION_LABEL)
         self.live_symbol = StringVar(value="BTCUSDT永续")
@@ -293,6 +299,8 @@ class TradingDesktopApp(Tk):
         self.metric_custom_period = StringVar(value="-")
         self.metric_current_atr = StringVar(value="-")
         self.live_view_slot = StringVar(value="1")
+        self.live_chart_view_slot = StringVar(value="")
+        self.live_trade_detail_view_slot = StringVar(value="")
         self.live_action = StringVar(value="\u672a\u68c0\u67e5")
         self.live_action_account = StringVar(value="\u5f53\u524d\u8d26\u6237\uff1aAPI 1 | \u4f59\u989d - | \u4eca\u65e5 - | \u603b -")
         self.live_account_panel_name = StringVar(value="API 1")
@@ -352,6 +360,7 @@ class TradingDesktopApp(Tk):
 
     def _on_entry_mode_changed(self, *_args: object) -> None:
         self._sync_entry_mode_controls()
+        self._refresh_live_entry_mode_backtest_hint()
 
     def _sync_live_poll_with_period(self) -> None:
         self.live_poll.set(str(self._default_live_poll_seconds(self.live_period.get())))
@@ -671,9 +680,8 @@ class TradingDesktopApp(Tk):
 
         button_bar = ttk.Frame(parent, style="Card.TFrame")
         button_bar.grid(row=1, column=0, sticky="ew", pady=(14, 0))
-        ttk.Button(button_bar, text="检查一次", style="Primary.TButton", command=self._start_live_once).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(button_bar, text="开始轮询", command=self._start_live_loop).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(button_bar, text="停止轮询", command=self._stop_live_loop).grid(row=0, column=2)
+        ttk.Button(button_bar, text="开始轮询", style="Primary.TButton", command=self._start_live_loop).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_bar, text="停止轮询", command=self._stop_live_loop).grid(row=0, column=1)
 
         advanced_box = ttk.LabelFrame(parent, text="连接与余额", style="Setup.TLabelframe", padding=(16, 12))
         advanced_box.grid(row=2, column=0, sticky="nsew", pady=(14, 0))
@@ -697,10 +705,11 @@ class TradingDesktopApp(Tk):
         ttk.Button(api_button_bar, text="保存当前API", command=self._save_current_live_api_profile).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(api_button_bar, text="改名称", command=self._rename_current_live_api_profile).grid(row=0, column=1, padx=(0, 8))
         ttk.Button(api_button_bar, text="复制到其他API", command=self._copy_current_live_api_profile_to_other_slots).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(api_button_bar, text="添加API", command=self._add_live_api_profile_slot).grid(row=0, column=3, padx=(0, 8))
         auth_test_button = ttk.Button(api_button_bar, text="测试认证", command=self._start_live_auth_test)
-        auth_test_button.grid(row=0, column=3, padx=(0, 8))
+        auth_test_button.grid(row=0, column=4, padx=(0, 8))
         self.live_auth_test_buttons.append(auth_test_button)
-        ttk.Button(api_button_bar, text="清空当前API", command=self._clear_current_live_api_profile).grid(row=0, column=4)
+        ttk.Button(api_button_bar, text="清空当前API", command=self._clear_current_live_api_profile).grid(row=0, column=5)
 
         self._add_setup_entry(advanced_box, 1, 0, "API Key", self.live_api_key, width=22)
         self._add_setup_entry(advanced_box, 1, 2, "API Secret", self.live_api_secret, show="*", width=22)
@@ -770,8 +779,15 @@ class TradingDesktopApp(Tk):
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="真实仓位图", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        ttk.Label(selector_bar, text="策略", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        chart_selector = ttk.Combobox(selector_bar, textvariable=self.live_chart_view_slot, values=[], width=8, state="disabled")
+        chart_selector.grid(row=0, column=1, sticky="w")
+        chart_selector.bind("<<ComboboxSelected>>", self._on_live_chart_view_change)
+        self.live_chart_view_combos.append(chart_selector)
         control_bar = ttk.Frame(header, style="Card.TFrame")
-        control_bar.grid(row=0, column=1, sticky="e")
+        control_bar.grid(row=0, column=2, sticky="e")
         ttk.Button(control_bar, text="打开总图", width=10, command=self._open_live_chart).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(control_bar, text="放大", width=7, command=lambda: self._zoom_live_kline_preview(120, self._live_kline_preview_anchor_x())).grid(row=0, column=1, padx=(0, 6))
         ttk.Button(control_bar, text="缩小", width=7, command=lambda: self._zoom_live_kline_preview(-120, self._live_kline_preview_anchor_x())).grid(row=0, column=2, padx=(0, 6))
@@ -791,9 +807,16 @@ class TradingDesktopApp(Tk):
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="交易明细", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        ttk.Label(selector_bar, text="策略", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        detail_selector = ttk.Combobox(selector_bar, textvariable=self.live_trade_detail_view_slot, values=[], width=8, state="disabled")
+        detail_selector.grid(row=0, column=1, sticky="w")
+        detail_selector.bind("<<ComboboxSelected>>", self._on_live_trade_detail_view_change)
+        self.live_trade_detail_view_combos.append(detail_selector)
         ttk.Label(header, textvariable=self.live_trade_detail_status, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        columns = ("trade_no", "side", "quantity", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
+        columns = ("trade_no", "side", "quantity", "entry_period", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
         self.live_trade_detail_tree2 = ttk.Treeview(parent, columns=columns, show="headings", height=14)
         self.live_trade_detail_tree2.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
 
@@ -801,6 +824,7 @@ class TradingDesktopApp(Tk):
             "trade_no": "第几次交易",
             "side": "方向",
             "quantity": "开单数量(币)",
+            "entry_period": "开仓周期",
             "entry_ts": "进场时间",
             "entry_price": "进场价格",
             "atr_value": "ATR值",
@@ -814,6 +838,7 @@ class TradingDesktopApp(Tk):
             "trade_no": 92,
             "side": 70,
             "quantity": 90,
+            "entry_period": 90,
             "entry_ts": 150,
             "entry_price": 120,
             "atr_value": 100,
@@ -1152,9 +1177,8 @@ class TradingDesktopApp(Tk):
 
         button_bar = ttk.Frame(parent, style="Card.TFrame")
         button_bar.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(14, 0))
-        ttk.Button(button_bar, text="\u68c0\u67e5\u4e00\u6b21", style="Primary.TButton", command=self._start_live_once).grid(row=0, column=0, padx=(0, 8))
-        ttk.Button(button_bar, text="\u5f00\u59cb\u8f6e\u8be2", command=self._start_live_loop).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(button_bar, text="\u505c\u6b62\u8f6e\u8be2", command=self._stop_live_loop).grid(row=0, column=2)
+        ttk.Button(button_bar, text="\u5f00\u59cb\u8f6e\u8be2", style="Primary.TButton", command=self._start_live_loop).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(button_bar, text="\u505c\u6b62\u8f6e\u8be2", command=self._stop_live_loop).grid(row=0, column=1)
 
         advanced_box = ttk.LabelFrame(parent, text="\u8fde\u63a5\u4e0e\u4f59\u989d", style="Setup.TLabelframe", padding=(16, 12))
         advanced_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
@@ -1179,10 +1203,11 @@ class TradingDesktopApp(Tk):
         ttk.Button(api_button_bar, text="保存当前API", command=self._save_current_live_api_profile).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(api_button_bar, text="改名称", command=self._rename_current_live_api_profile).grid(row=0, column=1, padx=(0, 8))
         ttk.Button(api_button_bar, text="复制到其他API", command=self._copy_current_live_api_profile_to_other_slots).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(api_button_bar, text="添加API", command=self._add_live_api_profile_slot).grid(row=0, column=3, padx=(0, 8))
         auth_test_button = ttk.Button(api_button_bar, text="测试认证", command=self._start_live_auth_test)
-        auth_test_button.grid(row=0, column=3, padx=(0, 8))
+        auth_test_button.grid(row=0, column=4, padx=(0, 8))
         self.live_auth_test_buttons.append(auth_test_button)
-        ttk.Button(api_button_bar, text="清空当前API", command=self._clear_current_live_api_profile).grid(row=0, column=4)
+        ttk.Button(api_button_bar, text="清空当前API", command=self._clear_current_live_api_profile).grid(row=0, column=5)
 
         self._add_setup_entry(advanced_box, 1, 0, "API Key", self.live_api_key, width=22)
         self._add_setup_entry(advanced_box, 1, 2, "API Secret", self.live_api_secret, show="*", width=22)
@@ -1319,8 +1344,8 @@ class TradingDesktopApp(Tk):
         account_label: str | None = None,
         total_pnl: float | str | None = None,
     ) -> dict[str, str]:
-        numeric_suffix = strategy_id.rsplit("-", 1)[-1]
-        strategy_label = f"策略{numeric_suffix}" if numeric_suffix.isdigit() else "策略"
+        strategy_slot = self._display_slot_for_strategy_id(strategy_id) or str(len(self.live_strategy_records) + 1)
+        strategy_label = f"策略{strategy_slot}"
         return {
             "strategy": strategy_label,
             "account": (account_label or self._live_api_profile_option_label(request.account_tag or "API 1")).strip() or "-",
@@ -1335,16 +1360,113 @@ class TradingDesktopApp(Tk):
             "total_pnl": self._format_live_strategy_pnl(total_pnl),
         }
 
+    def _live_strategy_ids_in_display_order(self) -> list[str]:
+        return list(self.live_strategy_records.keys())
+
+    def _display_slot_for_strategy_id(self, strategy_id: str | None) -> str | None:
+        target_id = str(strategy_id or "").strip()
+        if not target_id:
+            return None
+        for index, live_strategy_id in enumerate(self._live_strategy_ids_in_display_order(), start=1):
+            if live_strategy_id == target_id:
+                return str(index)
+        return None
+
+    def _strategy_id_for_display_slot(self, slot: str | int) -> str | None:
+        try:
+            slot_value = int(str(slot).strip())
+        except (TypeError, ValueError):
+            return None
+        if slot_value < 1:
+            return None
+        display_order = self._live_strategy_ids_in_display_order()
+        if slot_value > len(display_order):
+            return None
+        return display_order[slot_value - 1]
+
+    def _refresh_live_strategy_display_labels(self) -> None:
+        for index, strategy_id in enumerate(self._live_strategy_ids_in_display_order(), start=1):
+            row = self.live_strategy_records.get(strategy_id)
+            if isinstance(row, dict):
+                row["strategy"] = f"策略{index}"
+
+    def _live_strategy_display_labels(self) -> list[str]:
+        self._refresh_live_strategy_display_labels()
+        labels: list[str] = []
+        for strategy_id in self._live_strategy_ids_in_display_order():
+            row = self.live_strategy_records.get(strategy_id) or {}
+            label = str(row.get("strategy") or "").strip()
+            if label:
+                labels.append(label)
+        return labels
+
+    def _strategy_id_for_display_label(self, label: str) -> str | None:
+        target = str(label or "").strip()
+        if not target:
+            return None
+        self._refresh_live_strategy_display_labels()
+        for strategy_id in self._live_strategy_ids_in_display_order():
+            row = self.live_strategy_records.get(strategy_id) or {}
+            if str(row.get("strategy") or "").strip() == target:
+                return strategy_id
+        return None
+
+    def _refresh_live_result_view_options(self) -> None:
+        labels = self._live_strategy_display_labels()
+        if not labels:
+            self.live_chart_view_slot.set("")
+            self.live_trade_detail_view_slot.set("")
+            for combo in self.live_chart_view_combos:
+                if combo is not None and combo.winfo_exists():
+                    combo.configure(values=[], state="disabled")
+            for combo in self.live_trade_detail_view_combos:
+                if combo is not None and combo.winfo_exists():
+                    combo.configure(values=[], state="disabled")
+            return
+
+        current_chart_label = ""
+        selected_id = self._selected_live_strategy_id() or self.active_live_strategy_id
+        if selected_id:
+            row = self.live_strategy_records.get(selected_id) or {}
+            current_chart_label = str(row.get("strategy") or "").strip()
+        if current_chart_label not in labels:
+            current_chart_label = labels[0]
+        self.live_chart_view_slot.set(current_chart_label)
+
+        detail_options = ["全部"] + labels
+        if self.live_trade_detail_view_slot.get().strip() not in detail_options:
+            self.live_trade_detail_view_slot.set("全部")
+
+        for combo in self.live_chart_view_combos:
+            if combo is not None and combo.winfo_exists():
+                combo.configure(values=labels, state="readonly")
+        for combo in self.live_trade_detail_view_combos:
+            if combo is not None and combo.winfo_exists():
+                combo.configure(values=detail_options, state="readonly")
+
+    def _on_live_chart_view_change(self, _event=None) -> None:
+        strategy_id = self._strategy_id_for_display_label(self.live_chart_view_slot.get())
+        if not strategy_id:
+            return
+        slot = self._display_slot_for_strategy_id(strategy_id)
+        if slot and self.live_view_slot.get().strip() != slot:
+            self.live_view_slot.set(slot)
+        self.active_live_strategy_id = strategy_id
+        self._refresh_live_strategy_table(select_id=strategy_id)
+        self._apply_selected_live_strategy_view(strategy_id=strategy_id)
+
+    def _on_live_trade_detail_view_change(self, _event=None) -> None:
+        self._apply_live_trade_detail_selection()
+
     def _refresh_live_strategy_table(self, *, select_id: str | None = None) -> None:
         tree = self.live_strategy_tree
         if tree is None or not tree.winfo_exists():
             return
+        self._refresh_live_strategy_display_labels()
         current_select = select_id or (tree.selection()[0] if tree.selection() else self.active_live_strategy_id)
         tree.delete(*tree.get_children())
-        for strategy_id, row in sorted(
-            self.live_strategy_records.items(),
-            key=lambda item: int(self._slot_from_strategy_id(item[0]) or "99"),
-        ):
+        for strategy_id in self._live_strategy_ids_in_display_order():
+            row = self.live_strategy_records.get(strategy_id) or {}
             tree.insert(
                 "",
                 "end",
@@ -1366,9 +1488,10 @@ class TradingDesktopApp(Tk):
         if current_select and tree.exists(current_select):
             tree.selection_set(current_select)
             tree.focus(current_select)
-            slot = self._slot_from_strategy_id(current_select)
+            slot = self._display_slot_for_strategy_id(current_select)
             if slot and self.live_view_slot.get().strip() != slot:
                 self.live_view_slot.set(slot)
+        self._refresh_live_result_view_options()
 
     def _find_running_live_strategy(self, signature: str) -> str | None:
         for strategy_id, worker in self.live_strategy_workers.items():
@@ -1387,6 +1510,7 @@ class TradingDesktopApp(Tk):
         self.live_strategy_snapshots.pop(strategy_id, None)
         if remove_row:
             self.live_strategy_records.pop(strategy_id, None)
+            self._refresh_live_strategy_display_labels()
 
         if self.active_live_strategy_id == strategy_id:
             self.active_live_strategy_id = None
@@ -1416,11 +1540,20 @@ class TradingDesktopApp(Tk):
     @staticmethod
     def _default_live_api_profiles() -> dict[str, dict[str, str]]:
         return {
-            "API 1": {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""},
-            "API 2": {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""},
-            "API 3": {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""},
-            "API 4": {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""},
+            f"API {index}": TradingDesktopApp._empty_live_api_profile()
+            for index in range(1, DEFAULT_LIVE_API_PROFILE_COUNT + 1)
         }
+
+    @staticmethod
+    def _empty_live_api_profile() -> dict[str, str]:
+        return {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""}
+
+    @staticmethod
+    def _live_api_profile_sort_key(profile_name: str) -> tuple[int, str]:
+        match = re.fullmatch(r"API\s+(\d+)", str(profile_name or "").strip(), flags=re.IGNORECASE)
+        if match:
+            return (int(match.group(1)), str(profile_name))
+        return (MAX_LIVE_API_PROFILES + 1, str(profile_name))
 
     def _live_api_profiles_path(self) -> Path:
         return Path("runtime") / "live_api_profiles.json"
@@ -1435,7 +1568,13 @@ class TradingDesktopApp(Tk):
                 payload = {}
             if isinstance(payload, dict):
                 for profile_name, values in payload.items():
-                    if profile_name in profiles and isinstance(values, dict):
+                    if isinstance(values, dict):
+                        match = re.fullmatch(r"API\s+(\d+)", str(profile_name).strip(), flags=re.IGNORECASE)
+                        if not match:
+                            continue
+                        slot_no = int(match.group(1))
+                        if slot_no < 1 or slot_no > MAX_LIVE_API_PROFILES:
+                            continue
                         profiles[profile_name] = {
                             "api_key": str(values.get("api_key") or ""),
                             "api_secret": str(values.get("api_secret") or ""),
@@ -1455,7 +1594,11 @@ class TradingDesktopApp(Tk):
     def _save_live_api_profiles(self) -> None:
         path = self._live_api_profiles_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.live_api_profiles, ensure_ascii=True, indent=2), encoding="utf-8")
+        ordered_profiles = {
+            profile_name: self.live_api_profiles.get(profile_name, self._empty_live_api_profile())
+            for profile_name in sorted(self.live_api_profiles.keys(), key=self._live_api_profile_sort_key)
+        }
+        path.write_text(json.dumps(ordered_profiles, ensure_ascii=True, indent=2), encoding="utf-8")
 
     def _apply_live_api_profile(self, profile_name: str) -> None:
         profile = self.live_api_profiles.get(profile_name, {})
@@ -1475,7 +1618,7 @@ class TradingDesktopApp(Tk):
         return self._live_api_profile_option_label(profile_name)
 
     def _refresh_live_api_profile_combo(self) -> None:
-        slots = list(self.live_api_profiles.keys()) or list(self._default_live_api_profiles().keys())
+        slots = sorted(self.live_api_profiles.keys(), key=self._live_api_profile_sort_key) or list(self._default_live_api_profiles().keys())
         option_map = {self._live_api_profile_option_label(slot): slot for slot in slots}
         self.live_api_profile_option_map = option_map
         values = list(option_map.keys())
@@ -1571,7 +1714,7 @@ class TradingDesktopApp(Tk):
         return None
 
     def _selected_live_strategy_id(self) -> str | None:
-        return self._strategy_id_for_slot(self.live_view_slot.get().strip() or "1")
+        return self._strategy_id_for_display_slot(self.live_view_slot.get().strip() or "1")
 
     def _find_available_live_strategy_id(self) -> str | None:
         for slot in range(1, MAX_LIVE_STRATEGIES + 1):
@@ -1592,7 +1735,7 @@ class TradingDesktopApp(Tk):
         if tree is None or not tree.selection():
             return
         strategy_id = tree.selection()[0]
-        slot = self._slot_from_strategy_id(strategy_id)
+        slot = self._display_slot_for_strategy_id(strategy_id)
         if slot and self.live_view_slot.get().strip() != slot:
             self.live_view_slot.set(slot)
         self._apply_selected_live_strategy_view(strategy_id=strategy_id)
@@ -1602,9 +1745,9 @@ class TradingDesktopApp(Tk):
 
     def _apply_selected_live_strategy_view(self, *, strategy_id: str | None = None) -> None:
         target_id = strategy_id or self._selected_live_strategy_id()
-        slot = self._slot_from_strategy_id(target_id) or self.live_view_slot.get().strip() or "1"
-        strategy_name = f"策略{slot}"
+        slot = self._display_slot_for_strategy_id(target_id) or self.live_view_slot.get().strip() or "1"
         row = self.live_strategy_records.get(target_id or "")
+        strategy_name = row.get("strategy", f"策略{slot}") if isinstance(row, dict) else f"策略{slot}"
         snapshot = self.live_strategy_snapshots.get(target_id or "")
 
         if not snapshot:
@@ -1613,17 +1756,18 @@ class TradingDesktopApp(Tk):
             self.live_fixed_size.set("1")
             self.live_account_panel_name.set(row.get("account", strategy_name) if row else strategy_name)
             self._refresh_live_action_account()
-            self._clear_live_trade_detail_table()
             if row:
                 self.live_action.set(f"{strategy_name} 轮询中")
                 self.live_status.set(f"当前查看 {strategy_name}，这条策略正在等待新的检查结果。")
                 self.live_kline_status.set(f"{strategy_name} 当前还没有可显示的真实仓位图数据。")
-                self.live_trade_detail_status.set(f"{strategy_name} 当前还没有成交记录。")
             else:
                 self.live_action.set(f"{strategy_name} 未启用")
-                self.live_status.set(f"当前查看 {strategy_name}，这条策略还没有启动。")
+                if self._has_backtest_result_for_entry_mode(self.live_entry_mode.get()):
+                    self.live_status.set(f"当前查看 {strategy_name}，这条策略还没有启动。")
+                else:
+                    self.live_status.set(self._live_entry_mode_backtest_message())
                 self.live_kline_status.set(f"{strategy_name} 当前未启动，真实仓位图会在这条策略开始轮询后显示。")
-                self.live_trade_detail_status.set(f"{strategy_name} 当前未启动，交易明细会在产生真实记录后显示。")
+            self._apply_live_trade_detail_selection()
             self._schedule_live_kline_preview()
             return
 
@@ -1660,12 +1804,10 @@ class TradingDesktopApp(Tk):
             self.live_kline_status.set(
                 f"{strategy_name} | {self.live_chart_bundle.symbol} {self.live_chart_bundle.period} 真实仓位图已更新，买卖点和交易明细都按当前任务单独显示。"
             )
-            self._refresh_live_trade_detail_table(self.live_chart_bundle, strategy_name=strategy_name)
-            self._schedule_live_kline_preview()
         else:
-            self._clear_live_trade_detail_table()
             self.live_kline_status.set(f"{strategy_name} 当前还没有可显示的真实仓位图数据。")
-            self.live_trade_detail_status.set(f"{strategy_name} 当前还没有成交记录。")
+        self._apply_live_trade_detail_selection()
+        self._schedule_live_kline_preview()
 
     def _store_live_strategy_snapshot(
         self,
@@ -1867,6 +2009,29 @@ class TradingDesktopApp(Tk):
             return False
         return any(str(profile.get(key) or "").strip() for key in ("api_key", "api_secret", "api_passphrase"))
 
+    def _add_live_api_profile_slot(self) -> None:
+        existing_slots = sorted(self.live_api_profiles.keys(), key=self._live_api_profile_sort_key)
+        next_slot = None
+        for index in range(1, MAX_LIVE_API_PROFILES + 1):
+            candidate = f"API {index}"
+            if candidate not in self.live_api_profiles:
+                next_slot = candidate
+                break
+
+        if next_slot is None:
+            messagebox.showinfo("提示", f"API 配置最多只能添加到 {MAX_LIVE_API_PROFILES} 个。", parent=self)
+            self.live_status.set(f"API 配置已达到上限 {MAX_LIVE_API_PROFILES} 个。")
+            return
+
+        self.live_api_profiles[next_slot] = self._empty_live_api_profile()
+        self._save_live_api_profiles()
+        self.live_api_profile.set(next_slot)
+        self._apply_live_api_profile(next_slot)
+        self._reset_live_account_snapshot()
+        self._refresh_live_api_profile_combo()
+        self.live_status.set(f"已新增 {next_slot}，现在可继续填写新的 API 配置。")
+        self._live_log(f"已新增 API 配置槽位：{next_slot}。当前共 {len(existing_slots) + 1} 个槽位。")
+
     def _copy_current_live_api_profile_to_other_slots(self) -> None:
         source_name = self.live_api_profile.get().strip() or "API 1"
         source_profile = self._capture_current_live_api_profile()
@@ -1877,12 +2042,12 @@ class TradingDesktopApp(Tk):
         self.live_api_profiles[source_name] = source_profile
         copied_slots: list[str] = []
         skipped_slots: list[str] = []
-        for slot_name in self._default_live_api_profiles().keys():
+        for slot_name in sorted(self.live_api_profiles.keys(), key=self._live_api_profile_sort_key):
             if slot_name == source_name:
                 continue
             existing = self.live_api_profiles.setdefault(
                 slot_name,
-                {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""},
+                self._empty_live_api_profile(),
             )
             if self._live_api_profile_has_credentials(existing):
                 skipped_slots.append(slot_name)
@@ -1931,7 +2096,7 @@ class TradingDesktopApp(Tk):
     def _set_live_api_profile_custom_name(self, profile_name: str, custom_name: str) -> None:
         profile = self.live_api_profiles.setdefault(
             profile_name,
-            {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""},
+            self._empty_live_api_profile(),
         )
         profile["custom_name"] = custom_name.strip()
         self._save_live_api_profiles()
@@ -1961,7 +2126,7 @@ class TradingDesktopApp(Tk):
 
     def _clear_current_live_api_profile(self) -> None:
         profile_name = self.live_api_profile.get().strip() or "API 1"
-        self.live_api_profiles[profile_name] = {"api_key": "", "api_secret": "", "api_passphrase": "", "custom_name": "", "detected_name": ""}
+        self.live_api_profiles[profile_name] = self._empty_live_api_profile()
         self._save_live_api_profiles()
         self._apply_live_api_profile(profile_name)
         self._reset_live_account_snapshot()
@@ -2074,25 +2239,30 @@ class TradingDesktopApp(Tk):
         metric_box.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(14, 0))
         self._build_backtest_metric_card(metric_box)
 
-    def _add_backtest_view_selector(self, parent: ttk.Frame, *, label: str, allow_all: bool = True) -> None:
+    def _add_backtest_view_selector(
+        self,
+        parent: ttk.Frame,
+        *,
+        label: str,
+        allow_all: bool = True,
+        variable: StringVar | None = None,
+        values: list[str] | None = None,
+        on_change=None,
+        combo_store: list[ttk.Combobox] | None = None,
+    ) -> None:
         ttk.Label(parent, text=label, style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
-        variable = self.backtest_view_slot if allow_all else self.backtest_view_slot_task
+        variable = variable if variable is not None else (self.backtest_view_slot if allow_all else self.backtest_view_slot_task)
         combo = ttk.Combobox(
             parent,
             textvariable=variable,
-            values=["全部"] if allow_all else ["不选"],
+            values=values or (["全部"] if allow_all else ["不选"]),
             width=7,
             state="readonly",
         )
         combo.grid(row=0, column=1, sticky="w")
-        combo.bind(
-            "<<ComboboxSelected>>",
-            self._on_backtest_view_change if allow_all else self._on_backtest_view_change_task,
-        )
-        if allow_all:
-            self.backtest_view_combos_all.append(combo)
-        else:
-            self.backtest_view_combos_task.append(combo)
+        combo.bind("<<ComboboxSelected>>", on_change or (self._on_backtest_view_change if allow_all else self._on_backtest_view_change_task))
+        target_store = combo_store if combo_store is not None else (self.backtest_view_combos_all if allow_all else self.backtest_view_combos_task)
+        target_store.append(combo)
 
     def _refresh_backtest_view_options(self) -> None:
         if self.backtest_tasks:
@@ -2105,11 +2275,15 @@ class TradingDesktopApp(Tk):
             combo.configure(values=options_all)
         for combo in self.backtest_view_combos_task:
             combo.configure(values=options_task)
+        for combo in self.backtest_view_combos_trade_detail:
+            combo.configure(values=options_all)
         if self.backtest_view_slot.get() not in options_all:
             self.backtest_view_slot.set("全部")
         if self.backtest_view_slot_task.get() not in options_task:
             self.backtest_view_slot_task.set("不选")
-        self._schedule_bt_drawdown_preview()
+        if self.backtest_trade_detail_view_slot.get() not in options_all:
+            self.backtest_trade_detail_view_slot.set("全部")
+        self._apply_backtest_view()
 
     def _on_backtest_view_change(self, _event=None) -> None:
         self._apply_backtest_view()
@@ -2119,6 +2293,9 @@ class TradingDesktopApp(Tk):
             self.backtest_view_slot.set(self.backtest_view_slot_task.get())
         self._apply_backtest_view()
 
+    def _on_backtest_trade_detail_view_change(self, _event=None) -> None:
+        self._apply_backtest_trade_detail_view()
+
     def _apply_backtest_view(self) -> None:
         if self.backtest_view_slot.get().strip() == "全部":
             self._update_backtest_metric_panel_aggregate()
@@ -2127,9 +2304,6 @@ class TradingDesktopApp(Tk):
         selected = self._selected_backtest_task_result()
         if selected is not None and isinstance(selected.get("bundle"), BacktestChartBundle):
             self.latest_chart_bundle = selected.get("bundle")
-            self.kline_status.set(f"{self.latest_chart_bundle.symbol} {self.latest_chart_bundle.period} 已切换到策略 {selected.get('strategy_id')}")
-            self.trade_detail_status.set(f"已切换到策略 {selected.get('strategy_id')} 的交易明细。")
-            self._refresh_trade_detail_table(self.latest_chart_bundle)
             result = selected.get("result") or {}
             self.sltp_chart_payloads = result.get("sltp_chart_payloads") if isinstance(result.get("sltp_chart_payloads"), dict) else {}
             matrix_rows = result.get("sltp_matrix", [])
@@ -2142,7 +2316,8 @@ class TradingDesktopApp(Tk):
             if isinstance(latest, BacktestChartBundle):
                 self.latest_chart_bundle = latest
         self._schedule_bt_drawdown_preview()
-        self._schedule_kline_preview()
+        self._apply_backtest_kline_view()
+        self._apply_backtest_trade_detail_view()
 
     def _update_backtest_metric_panel_aggregate(self) -> None:
         total_net_pnl = 0.0
@@ -2167,13 +2342,99 @@ class TradingDesktopApp(Tk):
         self.metric_current_atr.set("-")
 
     def _selected_backtest_task_result(self) -> dict[str, object] | None:
-        choice = self.backtest_view_slot.get().strip()
-        if not choice or choice == "全部":
+        return self._selected_backtest_task_result_by_choice(self.backtest_view_slot.get())
+
+    def _selected_backtest_task_result_by_choice(self, choice: str | None) -> dict[str, object] | None:
+        choice = str(choice or "").strip()
+        if not choice or choice in {"全部", "不选"}:
             return None
         for item in self.backtest_task_results:
             if str(item.get("strategy_id")) == choice:
                 return item
         return None
+
+    def _selected_backtest_kline_task_result(self) -> dict[str, object] | None:
+        return self._selected_backtest_task_result_by_choice(self.backtest_view_slot_task.get())
+
+    def _selected_backtest_trade_detail_task_result(self) -> dict[str, object] | None:
+        return self._selected_backtest_task_result_by_choice(self.backtest_trade_detail_view_slot.get())
+
+    def _current_backtest_kline_bundle(self) -> BacktestChartBundle | None:
+        selected = self._selected_backtest_kline_task_result()
+        if selected is None:
+            return None
+        strategy_id = str(selected.get("strategy_id") or "")
+        if strategy_id and self.backtest_view_slot.get().strip() == strategy_id and isinstance(self.latest_chart_bundle, BacktestChartBundle):
+            return self.latest_chart_bundle
+        bundle = selected.get("bundle")
+        return bundle if isinstance(bundle, BacktestChartBundle) else None
+
+    def _current_trade_detail_bundle_for_choice(self, choice: str) -> BacktestChartBundle | None:
+        selected = self._selected_backtest_task_result_by_choice(choice)
+        if selected is None:
+            return None
+        strategy_id = str(selected.get("strategy_id") or "")
+        if strategy_id and self.backtest_view_slot.get().strip() == strategy_id and isinstance(self.latest_chart_bundle, BacktestChartBundle):
+            return self.latest_chart_bundle
+        bundle = selected.get("bundle")
+        return bundle if isinstance(bundle, BacktestChartBundle) else None
+
+    def _apply_backtest_kline_view(self) -> None:
+        selected = self._selected_backtest_kline_task_result()
+        if selected is None:
+            self.kline_status.set("请选择一个任务查看回测K线图。")
+            self._schedule_kline_preview()
+            return
+
+        bundle = self._current_backtest_kline_bundle()
+        strategy_id = str(selected.get("strategy_id") or "-")
+        if bundle is None or bundle.signal_frame.empty:
+            self.kline_status.set(f"策略 {strategy_id} 暂时没有可显示的K线数据。")
+            self._schedule_kline_preview()
+            return
+
+        suffix = ""
+        if self.backtest_view_slot.get().strip() == strategy_id and isinstance(self.latest_chart_bundle, BacktestChartBundle):
+            suffix = f" | {self._current_matrix_display_label()}"
+        self.kline_status.set(
+            f"{bundle.symbol} {bundle.period} 策略 {strategy_id}{suffix} 已就绪，普通滚轮可翻页，Ctrl+滚轮缩放，Shift+滚轮横移，左键拖动。"
+        )
+        self._schedule_kline_preview()
+
+    def _apply_backtest_trade_detail_view(self) -> None:
+        choice = self.backtest_trade_detail_view_slot.get().strip()
+        if choice == "全部":
+            trade_count = self._refresh_trade_detail_table_aggregate()
+            if trade_count > 0:
+                self.trade_detail_status.set(f"全部任务交易明细，共 {trade_count} 笔，已显示开仓周期、手续费和ATR值。")
+            elif isinstance(self.latest_chart_bundle, BacktestChartBundle):
+                trade_count = self._refresh_trade_detail_table(self.latest_chart_bundle)
+                if trade_count > 0:
+                    self.trade_detail_status.set(
+                        f"{self.latest_chart_bundle.symbol} {self.latest_chart_bundle.period} 交易明细，共 {trade_count} 笔，已显示开仓周期、手续费和ATR值。"
+                    )
+                else:
+                    self.trade_detail_status.set("当前任务暂时没有交易明细。")
+            else:
+                self.trade_detail_status.set("当前还没有可显示的交易明细。")
+            return
+
+        selected = self._selected_backtest_trade_detail_task_result()
+        bundle = self._current_trade_detail_bundle_for_choice(choice)
+        if selected is None or bundle is None:
+            self._refresh_trade_detail_table(None)
+            self.trade_detail_status.set("请选择一个任务查看交易明细。")
+            return
+
+        trade_count = self._refresh_trade_detail_table(bundle)
+        if trade_count <= 0:
+            self.trade_detail_status.set(f"策略 {choice} 暂时没有交易明细。")
+            return
+
+        suffix = ""
+        if self.backtest_view_slot.get().strip() == choice and isinstance(self.latest_chart_bundle, BacktestChartBundle):
+            suffix = f" | {self._current_matrix_display_label()}"
+        self.trade_detail_status.set(f"策略 {choice}{suffix} 交易明细，共 {trade_count} 笔，已显示开仓周期、手续费和ATR值。")
 
     def _build_live_log_card(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -2246,7 +2507,15 @@ class TradingDesktopApp(Tk):
         ttk.Label(title_bar, text="回测K线图", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
         selector_bar = ttk.Frame(title_bar, style="Card.TFrame")
         selector_bar.grid(row=0, column=1, sticky="w", padx=(12, 0))
-        self._add_backtest_view_selector(selector_bar, label="交易明细")
+        self._add_backtest_view_selector(
+            selector_bar,
+            label="回测K线图",
+            allow_all=False,
+            variable=self.backtest_view_slot_task,
+            values=["不选"],
+            on_change=self._on_backtest_view_change_task,
+            combo_store=self.backtest_view_combos_task,
+        )
         control_bar = ttk.Frame(header, style="Card.TFrame")
         control_bar.grid(row=0, column=1, sticky="e")
         ttk.Button(control_bar, text="放大", width=7, command=lambda: self._zoom_kline_preview(120, self._kline_preview_anchor_x())).grid(row=0, column=0, padx=(0, 6))
@@ -2275,10 +2544,17 @@ class TradingDesktopApp(Tk):
         ttk.Label(header, text="交易明细", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
         selector_bar = ttk.Frame(header, style="Card.TFrame")
         selector_bar.grid(row=0, column=1, sticky="w", padx=(12, 0))
-        self._add_backtest_view_selector(selector_bar, label="交易明细")
+        self._add_backtest_view_selector(
+            selector_bar,
+            label="交易明细",
+            variable=self.backtest_trade_detail_view_slot,
+            values=["全部"],
+            on_change=self._on_backtest_trade_detail_view_change,
+            combo_store=self.backtest_view_combos_trade_detail,
+        )
         ttk.Label(header, textvariable=self.trade_detail_status, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        columns = ("trade_no", "side", "quantity", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
+        columns = ("trade_no", "side", "quantity", "entry_period", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
         self.trade_detail_tree = ttk.Treeview(parent, columns=columns, show="headings", height=14)
         self.trade_detail_tree.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
 
@@ -2286,6 +2562,7 @@ class TradingDesktopApp(Tk):
             "trade_no": "第几次交易",
             "side": "方向",
             "quantity": "开单数量(币)",
+            "entry_period": "开仓周期",
             "entry_ts": "进场时间",
             "entry_price": "进场价格",
             "atr_value": "ATR值",
@@ -2299,6 +2576,7 @@ class TradingDesktopApp(Tk):
             "trade_no": 92,
             "side": 70,
             "quantity": 90,
+            "entry_period": 90,
             "entry_ts": 150,
             "entry_price": 120,
             "atr_value": 100,
@@ -2321,8 +2599,15 @@ class TradingDesktopApp(Tk):
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="真实仓位图", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        ttk.Label(selector_bar, text="策略", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        chart_selector = ttk.Combobox(selector_bar, textvariable=self.live_chart_view_slot, values=[], width=8, state="disabled")
+        chart_selector.grid(row=0, column=1, sticky="w")
+        chart_selector.bind("<<ComboboxSelected>>", self._on_live_chart_view_change)
+        self.live_chart_view_combos.append(chart_selector)
         control_bar = ttk.Frame(header, style="Card.TFrame")
-        control_bar.grid(row=0, column=1, sticky="e")
+        control_bar.grid(row=0, column=2, sticky="e")
         ttk.Button(control_bar, text="打开总图", width=9, command=self._open_live_chart).grid(row=0, column=0, padx=(0, 8))
         ttk.Button(control_bar, text="放大", width=7, command=lambda: self._zoom_live_kline_preview(120, self._live_kline_preview_anchor_x())).grid(row=0, column=1, padx=(0, 6))
         ttk.Button(control_bar, text="缩小", width=7, command=lambda: self._zoom_live_kline_preview(-120, self._live_kline_preview_anchor_x())).grid(row=0, column=2, padx=(0, 6))
@@ -2348,9 +2633,16 @@ class TradingDesktopApp(Tk):
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="交易明细", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        selector_bar = ttk.Frame(header, style="Card.TFrame")
+        selector_bar.grid(row=0, column=1, sticky="e", padx=(0, 10))
+        ttk.Label(selector_bar, text="策略", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        detail_selector = ttk.Combobox(selector_bar, textvariable=self.live_trade_detail_view_slot, values=[], width=8, state="disabled")
+        detail_selector.grid(row=0, column=1, sticky="w")
+        detail_selector.bind("<<ComboboxSelected>>", self._on_live_trade_detail_view_change)
+        self.live_trade_detail_view_combos.append(detail_selector)
         ttk.Label(header, textvariable=self.live_trade_detail_status, style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
 
-        columns = ("trade_no", "side", "quantity", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
+        columns = ("trade_no", "side", "quantity", "entry_period", "entry_ts", "entry_price", "atr_value", "exit_ts", "exit_price", "pnl", "fees", "exit_reason")
         self.live_trade_detail_tree = ttk.Treeview(parent, columns=columns, show="headings", height=14)
         self.live_trade_detail_tree.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
 
@@ -2358,6 +2650,7 @@ class TradingDesktopApp(Tk):
             "trade_no": "第几次交易",
             "side": "方向",
             "quantity": "开单数量(币)",
+            "entry_period": "开仓周期",
             "entry_ts": "进场时间",
             "entry_price": "进场价格",
             "atr_value": "ATR值",
@@ -2371,6 +2664,7 @@ class TradingDesktopApp(Tk):
             "trade_no": 92,
             "side": 70,
             "quantity": 90,
+            "entry_period": 90,
             "entry_ts": 150,
             "entry_price": 120,
             "atr_value": 100,
@@ -2401,78 +2695,7 @@ class TradingDesktopApp(Tk):
                     tree.delete(item)
         self.live_trade_detail_status.set("真实仓位产生买卖记录后，这里会显示真实仓位的交易明细，并包含手续费。")
 
-    def _refresh_trade_detail_table(self, bundle: BacktestChartBundle | None, *, display_label: str | None = None) -> None:
-        if self.trade_detail_tree is None:
-            return
-
-        for item in self.trade_detail_tree.get_children():
-            self.trade_detail_tree.delete(item)
-
-        if bundle is None or bundle.trades_df.empty:
-            self.trade_detail_status.set("当前组合暂时没有交易明细。")
-            return
-
-        trades = self._sort_trades_for_display(bundle.trades_df)
-        signal_frame = bundle.signal_frame.copy() if bundle.signal_frame is not None else pd.DataFrame()
-        trade_count = 0
-        for idx, trade in enumerate(trades.itertuples(), start=1):
-            self.trade_detail_tree.insert(
-                "",
-                "end",
-                iid=f"trade_{idx}",
-                values=(
-                    idx,
-                    self._format_trade_side(getattr(trade, "side", "")),
-                    self._format_trade_quantity(getattr(trade, "qty", None)),
-                    self._format_trade_timestamp(getattr(trade, "entry_ts", "")),
-                    self._format_trade_price(getattr(trade, "entry_price", None)),
-                    self._format_trade_atr(self._lookup_trade_atr(signal_frame, getattr(trade, "entry_ts", ""))),
-                    self._format_trade_timestamp(getattr(trade, "exit_ts", "")),
-                    self._format_trade_price(getattr(trade, "exit_price", None)),
-                    self._format_trade_pnl(getattr(trade, "pnl", None)),
-                    self._format_trade_fee(getattr(trade, "fees", None)),
-                    self._format_trade_reason(str(getattr(trade, "exit_reason", ""))),
-                ),
-            )
-            trade_count += 1
-
-        combo_label = display_label or self._current_matrix_display_label()
-        self.trade_detail_status.set(f"{bundle.symbol} {bundle.period} {combo_label} 交易明细，共 {trade_count} 笔，已显示手续费和ATR值。")
-
-    def _refresh_live_trade_detail_table(self, bundle: BacktestChartBundle | None, *, strategy_name: str | None = None) -> None:
-        if self.live_trade_detail_tree is None and self.live_trade_detail_tree2 is None:
-            return
-
-        prefix = f"{strategy_name} | " if strategy_name else ""
-
-        if bundle is None or bundle.trades_df.empty:
-            for tree in (self.live_trade_detail_tree, self.live_trade_detail_tree2):
-                if tree is not None:
-                    for item in tree.get_children():
-                        tree.delete(item)
-            self.live_trade_detail_status.set(f"{prefix}当前真实仓位还没有成交记录。")
-            return
-
-        signal_frame = bundle.signal_frame.copy() if bundle.signal_frame is not None else pd.DataFrame()
-        trade_count = 0
-        rows: list[tuple[object, str, str, str, str, str, str, str, str, str, str]] = []
-        for idx, trade in enumerate(self._sort_trades_for_display(bundle.trades_df).itertuples(), start=1):
-            rows.append(
-                (
-                    idx,
-                    self._format_trade_side(getattr(trade, "side", "")),
-                    self._format_trade_quantity(getattr(trade, "qty", getattr(trade, "entry_size", None))),
-                    self._format_trade_timestamp(getattr(trade, "entry_ts", "")),
-                    self._format_trade_price(getattr(trade, "entry_price", None)),
-                    self._format_trade_atr(self._lookup_trade_atr(signal_frame, getattr(trade, "entry_ts", ""))),
-                    self._format_trade_timestamp(getattr(trade, "exit_ts", "")),
-                    self._format_trade_price(getattr(trade, "exit_price", None)),
-                    self._format_trade_pnl(getattr(trade, "pnl", None)),
-                    self._format_trade_fee(getattr(trade, "fees", None)),
-                    self._format_trade_reason(str(getattr(trade, "exit_reason", ""))),
-                )
-            )
-        trade_count = len(rows)
+    def _populate_live_trade_detail_trees(self, rows: list[tuple[object, ...]]) -> None:
         for tree in (self.live_trade_detail_tree, self.live_trade_detail_tree2):
             if tree is None:
                 continue
@@ -2481,9 +2704,173 @@ class TradingDesktopApp(Tk):
             for idx, values in enumerate(rows, start=1):
                 tree.insert("", "end", iid=f"{tree}_{idx}", values=values)
 
+    def _refresh_trade_detail_table(self, bundle: BacktestChartBundle | None) -> int:
+        if self.trade_detail_tree is None:
+            return 0
+
+        for item in self.trade_detail_tree.get_children():
+            self.trade_detail_tree.delete(item)
+
+        if bundle is None or bundle.trades_df.empty:
+            return 0
+
+        trades = self._sort_trades_for_display(bundle.trades_df)
+        signal_frame = bundle.signal_frame if bundle.signal_frame is not None else pd.DataFrame()
+        rows: list[tuple[object, ...]] = []
+        for idx, trade in enumerate(trades.itertuples(), start=1):
+            rows.append(self._build_trade_detail_row_values(idx, bundle, trade, signal_frame=signal_frame))
+        for idx, values in enumerate(rows, start=1):
+            self.trade_detail_tree.insert("", "end", iid=f"trade_{idx}", values=values)
+        return len(rows)
+
+    def _refresh_trade_detail_table_aggregate(self) -> int:
+        if self.trade_detail_tree is None:
+            return 0
+
+        for item in self.trade_detail_tree.get_children():
+            self.trade_detail_tree.delete(item)
+
+        aggregated: list[tuple[tuple[int, int], tuple[int, int], str, int, BacktestChartBundle, pd.DataFrame, object]] = []
+        for item in self.backtest_task_results:
+            bundle = item.get("bundle")
+            if not isinstance(bundle, BacktestChartBundle) or bundle.trades_df.empty:
+                continue
+            strategy_id = str(item.get("strategy_id") or "")
+            signal_frame = bundle.signal_frame if bundle.signal_frame is not None else pd.DataFrame()
+            for local_idx, trade in enumerate(self._sort_trades_for_display(bundle.trades_df).itertuples(), start=1):
+                aggregated.append(
+                    (
+                        self._trade_sort_value(getattr(trade, "entry_ts", "")),
+                        self._trade_sort_value(getattr(trade, "exit_ts", "")),
+                        strategy_id,
+                        local_idx,
+                        bundle,
+                        signal_frame,
+                        trade,
+                    )
+                )
+
+        aggregated.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+        for idx, (_entry_key, _exit_key, _strategy_id, _local_idx, bundle, signal_frame, trade) in enumerate(aggregated, start=1):
+            self.trade_detail_tree.insert(
+                "",
+                "end",
+                iid=f"trade_all_{idx}",
+                values=self._build_trade_detail_row_values(idx, bundle, trade, signal_frame=signal_frame),
+            )
+        return len(aggregated)
+
+    def _refresh_live_trade_detail_table(self, bundle: BacktestChartBundle | None, *, strategy_name: str | None = None) -> None:
+        if self.live_trade_detail_tree is None and self.live_trade_detail_tree2 is None:
+            return
+
+        prefix = f"{strategy_name} | " if strategy_name else ""
+
+        if bundle is None or bundle.trades_df.empty:
+            self._populate_live_trade_detail_trees([])
+            self.live_trade_detail_status.set(f"{prefix}当前真实仓位还没有成交记录。")
+            return
+
+        signal_frame = bundle.signal_frame if bundle.signal_frame is not None else pd.DataFrame()
+        rows: list[tuple[object, ...]] = []
+        for idx, trade in enumerate(self._sort_trades_for_display(bundle.trades_df).itertuples(), start=1):
+            rows.append(
+                self._build_trade_detail_row_values(
+                    idx,
+                    bundle,
+                    trade,
+                    signal_frame=signal_frame,
+                    quantity_value=getattr(trade, "qty", getattr(trade, "entry_size", None)),
+                )
+            )
+        trade_count = len(rows)
+        self._populate_live_trade_detail_trees(rows)
+
         self.live_trade_detail_status.set(
-            f"{prefix}{bundle.symbol} {bundle.period} 真实仓位交易明细，共 {trade_count} 笔，已按真实仓位记录计算并显示ATR值。"
+            f"{prefix}{bundle.symbol} {bundle.period} 真实仓位交易明细，共 {trade_count} 笔，已显示开仓周期和ATR值。"
         )
+
+    def _refresh_live_trade_detail_table_aggregate(self) -> None:
+        if self.live_trade_detail_tree is None and self.live_trade_detail_tree2 is None:
+            return
+
+        all_items: list[tuple[pd.Timestamp, pd.Timestamp, str, tuple[object, ...]]] = []
+        active_strategy_count = 0
+        for strategy_id in self._live_strategy_ids_in_display_order():
+            snapshot = self.live_strategy_snapshots.get(strategy_id) or {}
+            bundle = snapshot.get("bundle")
+            if not isinstance(bundle, BacktestChartBundle) or bundle.trades_df.empty:
+                continue
+            active_strategy_count += 1
+            signal_frame = bundle.signal_frame if bundle.signal_frame is not None else pd.DataFrame()
+            for trade in self._sort_trades_for_display(bundle.trades_df).itertuples():
+                entry_ts = pd.to_datetime(getattr(trade, "entry_ts", None), errors="coerce")
+                exit_ts = pd.to_datetime(getattr(trade, "exit_ts", None), errors="coerce")
+                row = self._build_trade_detail_row_values(
+                    0,
+                    bundle,
+                    trade,
+                    signal_frame=signal_frame,
+                    quantity_value=getattr(trade, "qty", getattr(trade, "entry_size", None)),
+                )
+                all_items.append((entry_ts, exit_ts, strategy_id, row))
+
+        if not all_items:
+            self._populate_live_trade_detail_trees([])
+            self.live_trade_detail_status.set("全部真实仓位当前还没有成交记录。")
+            return
+
+        all_items.sort(key=lambda item: (pd.Timestamp.max if pd.isna(item[0]) else item[0], pd.Timestamp.max if pd.isna(item[1]) else item[1], item[2]))
+        rows: list[tuple[object, ...]] = []
+        for index, (_entry_ts, _exit_ts, _strategy_id, row) in enumerate(all_items, start=1):
+            rows.append((index, *row[1:]))
+        self._populate_live_trade_detail_trees(rows)
+        self.live_trade_detail_status.set(f"全部真实仓位交易明细，共 {len(rows)} 笔，已汇总 {active_strategy_count} 个策略并显示开仓周期和ATR值。")
+
+    def _build_trade_detail_row_values(
+        self,
+        trade_no: int,
+        bundle: BacktestChartBundle,
+        trade,
+        *,
+        signal_frame: pd.DataFrame | None = None,
+        quantity_value=None,
+    ) -> tuple[object, ...]:
+        resolved_signal_frame = signal_frame if signal_frame is not None else (bundle.signal_frame if bundle.signal_frame is not None else pd.DataFrame())
+        resolved_quantity = quantity_value if quantity_value is not None else getattr(trade, "qty", None)
+        return (
+            trade_no,
+            self._format_trade_side(getattr(trade, "side", "")),
+            self._format_trade_quantity(resolved_quantity),
+            str(bundle.period or "-"),
+            self._format_trade_timestamp(getattr(trade, "entry_ts", "")),
+            self._format_trade_price(getattr(trade, "entry_price", None)),
+            self._format_trade_atr(self._lookup_trade_atr(resolved_signal_frame, getattr(trade, "entry_ts", ""))),
+            self._format_trade_timestamp(getattr(trade, "exit_ts", "")),
+            self._format_trade_price(getattr(trade, "exit_price", None)),
+            self._format_trade_pnl(getattr(trade, "pnl", None)),
+            self._format_trade_fee(getattr(trade, "fees", None)),
+            self._format_trade_reason(str(getattr(trade, "exit_reason", ""))),
+        )
+
+    def _apply_live_trade_detail_selection(self) -> None:
+        option = self.live_trade_detail_view_slot.get().strip()
+        if not self.live_strategy_records:
+            self._clear_live_trade_detail_table()
+            return
+        if option == "全部":
+            self._refresh_live_trade_detail_table_aggregate()
+            return
+
+        strategy_id = self._strategy_id_for_display_label(option)
+        if not strategy_id:
+            self._clear_live_trade_detail_table()
+            return
+
+        row = self.live_strategy_records.get(strategy_id) or {}
+        snapshot = self.live_strategy_snapshots.get(strategy_id) or {}
+        bundle = snapshot.get("bundle") if isinstance(snapshot, dict) else None
+        self._refresh_live_trade_detail_table(bundle if isinstance(bundle, BacktestChartBundle) else None, strategy_name=str(row.get("strategy") or option))
 
     @staticmethod
     def _format_trade_side(side: str) -> str:
@@ -2524,6 +2911,26 @@ class TradingDesktopApp(Tk):
         except Exception:
             return None
         return None if pd.isna(value) else value
+
+    @staticmethod
+    def _trade_sort_value(value) -> tuple[int, int]:
+        if value in (None, "", "NaT"):
+            return (1, 0)
+        try:
+            stamp = pd.Timestamp(value)
+        except Exception:
+            return (1, 0)
+        if pd.isna(stamp):
+            return (1, 0)
+        try:
+            if stamp.tzinfo is not None:
+                stamp = stamp.tz_convert("UTC").tz_localize(None)
+        except Exception:
+            try:
+                stamp = stamp.tz_localize(None)
+            except Exception:
+                return (1, 0)
+        return (0, int(stamp.value))
 
     @staticmethod
     def _format_trade_atr(value) -> str:
@@ -2988,12 +3395,11 @@ class TradingDesktopApp(Tk):
         self.latest_chart_bundle = bundle
         display_label = str(payload.get("display_label") or matrix_key)
         self.chart_status.set(f"\u5f53\u524d\u5df2\u5207\u6362\u5230 {display_label}\uff0c\u70b9\u51fb\u4e0a\u65b9\u6309\u94ae\u53ef\u67e5\u770b\u8fd9\u7ec4\u56de\u6d4b\u603b\u56fe\u3002")
-        self.kline_status.set(f"{bundle.symbol} {bundle.period} \u5df2\u5207\u6362\u5230 {display_label}\uff0c\u4e0b\u62c9\u5230\u5e95\u90e8\u53ef\u67e5\u770b\u5bf9\u5e94K\u7ebf\u56fe\uff0c\u666e\u901a\u6eda\u8f6e\u53ef\u7ffb\u9875\uff0cCtrl+\u6eda\u8f6e\u7f29\u653e\uff0cShift+\u6eda\u8f6e\u6a2a\u79fb\uff0c\u5de6\u952e\u62d6\u52a8\u3002")
         self._update_backtest_metric_panel(matrix_key)
         self._sync_summary_tree_selection()
         self._schedule_bt_drawdown_preview()
-        self._schedule_kline_preview()
-        self._refresh_trade_detail_table(bundle, display_label=display_label)
+        self._apply_backtest_kline_view()
+        self._apply_backtest_trade_detail_view()
         if rerender:
             self._render_sltp_matrix(self.sltp_matrix_rows)
 
@@ -3557,7 +3963,7 @@ class TradingDesktopApp(Tk):
         return max(canvas.winfo_width(), 1080) / 2
 
     def _nudge_kline_preview(self, direction: int) -> None:
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         if bundle is None or bundle.signal_frame.empty:
             return
 
@@ -3570,7 +3976,7 @@ class TradingDesktopApp(Tk):
         self._schedule_kline_preview()
 
     def _show_latest_kline_preview(self) -> None:
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         if bundle is not None and not bundle.signal_frame.empty:
             total_bars = len(bundle.signal_frame)
             min_visible = total_bars if total_bars <= 24 else 24
@@ -3596,7 +4002,7 @@ class TradingDesktopApp(Tk):
         return start, end, visible
 
     def _zoom_kline_preview(self, delta: int, anchor_x: float) -> str:
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         canvas = self.kline_preview_canvas
         if canvas is None or bundle is None or bundle.signal_frame.empty:
             return "break"
@@ -3632,7 +4038,7 @@ class TradingDesktopApp(Tk):
         return self._zoom_kline_preview(event.delta, float(event.x))
 
     def _on_kline_preview_shift_mousewheel(self, event) -> str:
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         if bundle is None or bundle.signal_frame.empty:
             return "break"
 
@@ -3650,7 +4056,7 @@ class TradingDesktopApp(Tk):
         return "break"
 
     def _on_kline_preview_pan_start(self, event) -> str:
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         if bundle is None or bundle.signal_frame.empty or self.kline_preview_canvas is None:
             return "break"
 
@@ -3662,7 +4068,7 @@ class TradingDesktopApp(Tk):
         return "break"
 
     def _on_kline_preview_pan_drag(self, event) -> str:
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         canvas = self.kline_preview_canvas
         if not self._kline_preview_pan_active or canvas is None or bundle is None or bundle.signal_frame.empty:
             return "break"
@@ -3704,7 +4110,7 @@ class TradingDesktopApp(Tk):
         self._kline_preview_job = None
         self._kline_preview_pending = False
         canvas = self.kline_preview_canvas
-        bundle = self.latest_chart_bundle
+        bundle = self._current_backtest_kline_bundle()
         if canvas is None:
             return
 
@@ -3727,14 +4133,14 @@ class TradingDesktopApp(Tk):
             canvas.create_text(
                 width / 2,
                 height / 2 - 12,
-                text="\u56de\u6d4b\u5b8c\u6210\u540e\uff0cK\u7ebf\u56fe\u4f1a\u5728\u8fd9\u91cc\u81ea\u52a8\u751f\u6210\u3002",
+                text="\u8bf7\u5148\u4ece\u300c\u56de\u6d4bK\u7ebf\u56fe\u300d\u4e0b\u62c9\u6846\u9009\u62e9\u4e00\u4e2a\u4efb\u52a1\u3002",
                 fill="#d8e1ea",
                 font=("Microsoft YaHei UI", 14, "bold"),
             )
             canvas.create_text(
                 width / 2,
                 height / 2 + 18,
-                text="\u5f53\u524d\u9875\u9762\u5df2\u7ecf\u652f\u6301\u4e0a\u4e0b\u6eda\u52a8\uff0c\u8dd1\u5b8c\u56de\u6d4b\u540e\u76f4\u63a5\u4e0b\u62c9\u5230\u5e95\u90e8\u5c31\u80fd\u770b\u5230\u3002",
+                text="\u9009\u4e2d\u540e\u5c31\u4f1a\u663e\u793a\u5bf9\u5e94\u4efb\u52a1\u7684K\u7ebf\u548c\u4e70\u5356\u70b9\u3002",
                 fill="#87a0b3",
                 font=("Microsoft YaHei UI", 10),
             )
@@ -4108,14 +4514,14 @@ class TradingDesktopApp(Tk):
             canvas.create_text(
                 width / 2,
                 height / 2 - 12,
-                text="真实仓位检查后，真实仓位图会在这里自动生成。",
+                text="真实仓位开始轮询后，真实仓位图会在这里自动生成。",
                 fill="#d8e1ea",
                 font=("Microsoft YaHei UI", 14, "bold"),
             )
             canvas.create_text(
                 width / 2,
                 height / 2 + 18,
-                text="真实仓位页面支持上下滚动，检查一次后直接下拉到底部就能看到。",
+                text="真实仓位页面支持上下滚动，开始轮询后直接下拉到底部就能看到。",
                 fill="#87a0b3",
                 font=("Microsoft YaHei UI", 10),
             )
@@ -4334,14 +4740,14 @@ class TradingDesktopApp(Tk):
             canvas.create_text(
                 width / 2,
                 height / 2 - 12,
-                text="真实仓位检查后，真实仓位图会在这里自动生成。",
+                text="真实仓位开始轮询后，真实仓位图会在这里自动生成。",
                 fill="#d8e1ea",
                 font=("Microsoft YaHei UI", 14, "bold"),
             )
             canvas.create_text(
                 width / 2,
                 height / 2 + 18,
-                text="真实仓位页面支持上下滚动，检查一次后直接下拉到底部就能看到。",
+                text="真实仓位页面支持上下滚动，开始轮询后直接下拉到底部就能看到。",
                 fill="#87a0b3",
                 font=("Microsoft YaHei UI", 10),
             )
@@ -4592,6 +4998,8 @@ class TradingDesktopApp(Tk):
         self.bt_status.set("\u56de\u6d4b\u4e2d\uff0c\u8bf7\u7a0d\u5019...")
         self.chart_status.set("\u6b63\u5728\u751f\u6210\u8f6f\u4ef6\u5185\u7684\u56de\u6d4b\u603b\u56fe\u548c\u9875\u9762\u5e95\u90e8\u7684K\u7ebf\u56fe...")
         self.kline_status.set("\u6b63\u5728\u751f\u6210K\u7ebf\u56fe\uff0c\u5b8c\u6210\u540e\u4f1a\u81ea\u52a8\u663e\u793a\u5728\u9875\u9762\u6700\u4e0b\u65b9\u3002")
+        self.default_chart_bundle = None
+        self.latest_chart_bundle = None
         self.sltp_chart_payloads = {}
         self.selected_sltp_key = None
         self.sltp_matrix_rows = []
@@ -4603,7 +5011,10 @@ class TradingDesktopApp(Tk):
         self._schedule_kline_preview()
         self.backtest_task_results.clear()
         self.backtest_view_slot.set("全部")
+        self.backtest_view_slot_task.set("不选")
+        self.backtest_trade_detail_view_slot.set("全部")
         self._refresh_backtest_view_options()
+        self._refresh_live_entry_mode_backtest_hint()
         self._log("开始执行回测，正在整理参数并准备载入数据。")
         tasks = list(self.backtest_tasks) if self.backtest_tasks else [self._collect_backtest_task() | {"strategy_id": "1"}]
         worker = threading.Thread(target=self._run_backtest_worker, args=(tasks,), daemon=True)
@@ -4661,6 +5072,8 @@ class TradingDesktopApp(Tk):
                 return
 
         if not self._ensure_live_credentials_ready():
+            return
+        if not self._ensure_live_entry_mode_backtested():
             return
         self._apply_history_bar_limit(self.live_bars, period=self.live_period.get(), default=240, label="扫描K线数")
         request = self._collect_live_request()
@@ -4824,6 +5237,8 @@ class TradingDesktopApp(Tk):
 
         if not self._ensure_live_credentials_ready():
             return
+        if not self._ensure_live_entry_mode_backtested():
+            return
         self._apply_history_bar_limit(self.live_bars, period=self.live_period.get(), default=240, label="扫描K线数")
         current_view_id = self._selected_live_strategy_id()
         had_running_before = bool(self.live_strategy_workers)
@@ -4832,7 +5247,7 @@ class TradingDesktopApp(Tk):
         existing_id = self._find_running_live_strategy(signature)
         if existing_id:
             self.active_live_strategy_id = existing_id
-            existing_slot = self._slot_from_strategy_id(existing_id)
+            existing_slot = self._display_slot_for_strategy_id(existing_id)
             if existing_slot:
                 self.live_view_slot.set(existing_slot)
             self._refresh_live_strategy_table(select_id=existing_id)
@@ -4849,6 +5264,7 @@ class TradingDesktopApp(Tk):
 
         self.active_live_strategy_id = strategy_id
         self.live_strategy_records[strategy_id] = self._build_live_strategy_record(strategy_id, request)
+        self._refresh_live_strategy_display_labels()
 
         stop_event = threading.Event()
         worker_thread = threading.Thread(
@@ -4869,7 +5285,7 @@ class TradingDesktopApp(Tk):
         self._refresh_live_strategy_table(select_id=preferred_select_id)
 
         strategy_name = self.live_strategy_records.get(strategy_id, {}).get("strategy", "该策略")
-        strategy_slot = self._slot_from_strategy_id(strategy_id)
+        strategy_slot = self._display_slot_for_strategy_id(strategy_id)
         if strategy_slot and not had_running_before:
             self.live_view_slot.set(strategy_slot)
         status_message = f"{strategy_name} 轮询中..."
@@ -4992,7 +5408,7 @@ class TradingDesktopApp(Tk):
 
     def _open_live_chart(self) -> None:
         if self.live_chart_bundle is None:
-            messagebox.showinfo("\u63d0\u793a", "\u8fd8\u6ca1\u6709\u53ef\u6253\u5f00\u7684真实仓位总图。请先检查一次或开始轮询。")
+            messagebox.showinfo("\u63d0\u793a", "\u8fd8\u6ca1\u6709\u53ef\u6253\u5f00\u7684真实仓位总图。请先开始轮询。")
             return
 
         if self.live_chart_window is not None and self.live_chart_window.winfo_exists():
@@ -5220,6 +5636,8 @@ class TradingDesktopApp(Tk):
                     strategy_id = str(payload.get("strategy_id") or "").strip()
                     attempt = max(int(payload.get("attempt") or 1), 1)
                     detail_message = str(payload.get("message") or detail_message).strip() or detail_message
+                if strategy_id and strategy_id not in self.live_strategy_workers and strategy_id not in self.live_strategy_records:
+                    continue
                 strategy_name = self.live_strategy_records.get(strategy_id, {}).get("strategy", "实时检查") if strategy_id else "实时检查"
                 composed_message = f"{strategy_name} 连接 OKX 失败，正在第 {attempt} 次重试：{detail_message}"
                 self.live_status.set(composed_message)
@@ -5287,11 +5705,11 @@ class TradingDesktopApp(Tk):
         else:
             self._update_backtest_metric_panel()
             self._sync_live_strategy_form_selection()
-            self._refresh_trade_detail_table(self.latest_chart_bundle)
         self._render_sltp_matrix(matrix_rows)
         self._render_summary_rankings(matrix_rows, result.get("summary", []))
         self._schedule_bt_drawdown_preview()
-        self._schedule_kline_preview()
+        self._apply_backtest_kline_view()
+        self._apply_backtest_trade_detail_view()
 
         self._log(self._build_backtest_result_log_text(result))
         self._log(f"K\u7ebf\u56fe\uff1a{self.latest_trade_chart_path}")
@@ -5321,6 +5739,7 @@ class TradingDesktopApp(Tk):
             }
         )
         self._refresh_backtest_view_options()
+        self._refresh_live_entry_mode_backtest_hint()
 
     def _handle_live_result(self, result: dict, *, strategy_id: str | None = None) -> None:
         if strategy_id and strategy_id not in self.live_strategy_workers:
@@ -5362,6 +5781,10 @@ class TradingDesktopApp(Tk):
                     fast_value=fast_value,
                     slow_value=slow_value,
                 )
+                detail_view = self.live_trade_detail_view_slot.get().strip()
+                detail_strategy_id = self._strategy_id_for_display_label(detail_view)
+                if detail_view == "全部" or detail_strategy_id == strategy_id:
+                    self._apply_live_trade_detail_selection()
 
         self._update_detected_live_api_profile_name(
             str(report.get("account_name") or ""),
@@ -5631,6 +6054,40 @@ class TradingDesktopApp(Tk):
         self.live_status.set("\u7f3a\u5c11 API \u51ed\u8bc1\uff0c\u8bf7\u5148\u586b\u5199\u5f53\u524d API \u914d\u7f6e\u3002")
         return False
 
+    def _has_backtest_result_for_entry_mode(self, entry_mode: str) -> bool:
+        target_mode = self._normalize_entry_mode(entry_mode)
+        for item in self.backtest_task_results:
+            if not isinstance(item, dict):
+                continue
+            task = item.get("task") or {}
+            task_mode = self._normalize_entry_mode(str(task.get("entry_mode_norm") or task.get("entry_mode") or ""))
+            if task_mode == target_mode:
+                return True
+        return False
+
+    def _live_entry_mode_backtest_message(self, entry_mode: str | None = None) -> str:
+        return f"请先在回测{self._translate_entry_mode(entry_mode or self.live_entry_mode.get())}"
+
+    def _refresh_live_entry_mode_backtest_hint(self) -> None:
+        selected_id = self._selected_live_strategy_id()
+        if selected_id and (selected_id in self.live_strategy_records or selected_id in self.live_strategy_snapshots):
+            return
+        if self._has_backtest_result_for_entry_mode(self.live_entry_mode.get()):
+            if self.live_status.get().startswith("请先在回测"):
+                slot = self.live_view_slot.get().strip() or "1"
+                self.live_status.set(f"当前查看 策略{slot}，这条策略还没有启动。")
+            return
+        self.live_status.set(self._live_entry_mode_backtest_message())
+
+    def _ensure_live_entry_mode_backtested(self) -> bool:
+        if self._has_backtest_result_for_entry_mode(self.live_entry_mode.get()):
+            return True
+        message = self._live_entry_mode_backtest_message()
+        self.live_status.set(message)
+        self._live_log(message)
+        messagebox.showwarning("提示", message)
+        return False
+
     @staticmethod
     def _normalize_symbol(value: str) -> str:
         raw = value.strip().upper()
@@ -5741,7 +6198,7 @@ class TradingDesktopApp(Tk):
             raw = int(float(value.strip() or "1"))
         except (TypeError, ValueError):
             raw = 1
-        return max(1, min(30, raw))
+        return max(1, min(100, raw))
 
     @staticmethod
     def _resolve_backtest_source_bar(period: str) -> str:
